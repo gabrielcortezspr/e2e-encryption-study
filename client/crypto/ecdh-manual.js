@@ -1,7 +1,10 @@
 /**
- * Implementação Manual do ECDH (Elliptic Curve Diffie-Hellman)
- * Versão educativa que mostra cada etapa do processo
+ * ECDH (Elliptic Curve Diffie-Hellman) com logs educativos
  * Curva: secp256k1 (mesma do Bitcoin)
+ *
+ * Wrapper sobre crypto.createECDH que expõe cada etapa (chave privada,
+ * chave pública, segredo compartilhado). O segredo bruto NÃO é usado como
+ * chave: ele passa pelo HKDF (ver hkdf.js) antes de virar chave AES.
  */
 
 const crypto = require('crypto');
@@ -70,57 +73,6 @@ class ECDHManual {
         }
 
         return sharedSecret;
-    }
-
-    /**
-     * Deriva chave final para uso no IDEA (128 bits)
-     */
-    deriveIDEAKey(sharedSecret) {
-        if (this.debug) {
-            console.log('=== ECDH Manual - Derivacao da Chave IDEA ===');
-            console.log('1. Chave compartilhada (entrada):', sharedSecret.toString('hex'));
-        }
-
-        // Usar SHA-256 para derivar chave de 128 bits
-        const hash = crypto.createHash('sha256').update(sharedSecret).digest();
-        const ideaKey = hash.slice(0, 16); // Primeiros 16 bytes (128 bits)
-
-        if (this.debug) {
-            console.log('2. Hash SHA-256:', hash.toString('hex'));
-            console.log('3. Chave IDEA (128 bits):', ideaKey.toString('hex'));
-        }
-
-        return ideaKey;
-    }
-
-    /**
-     * Processo completo: gera chaves e calcula chave compartilhada
-     */
-    performKeyExchange(otherPublicKey) {
-        if (this.debug) {
-            console.log('=== ECDH Manual - Troca de Chaves Completa ===');
-        }
-
-        // Se não temos chaves, gerar
-        if (!this.privateKey || !this.publicKey) {
-            this.generateKeyPair();
-        }
-
-        // Calcular chave compartilhada
-        const sharedSecret = this.computeSharedSecret(otherPublicKey);
-        
-        // Derivar chave para IDEA
-        const ideaKey = this.deriveIDEAKey(sharedSecret);
-
-        if (this.debug) {
-            console.log('Troca de chaves ECDH concluida com sucesso!');
-        }
-
-        return {
-            publicKey: this.publicKey,
-            sharedSecret: sharedSecret,
-            ideaKey: ideaKey
-        };
     }
 
     /**

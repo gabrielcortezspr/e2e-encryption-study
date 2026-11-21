@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
  * Cliente CLI Principal do Sistema de Mensagens Seguras
+ * Uso: node client/cli/main.js --username Alice [--server URL] [--debug]
  */
 
-// Carregar variáveis de ambiente
-require('dotenv').config({ path: '../../config.env' });
+const path = require('path');
+
+// Carregar variáveis de ambiente (caminho relativo a este arquivo, não ao cwd)
+require('dotenv').config({ path: path.join(__dirname, '..', '..', 'config.env') });
 
 const readline = require('readline');
 const chalk = require('chalk');
@@ -94,14 +97,14 @@ class SecureMessageClient {
         console.log('');
         console.log(chalk.yellow('Opções:'));
         console.log('  -u, --username <nome>  Nome do usuário (obrigatório)');
-        console.log('  -s, --server <url>     URL do servidor (padrão: localhost:3000)');
-        console.log('  -d, --debug           Ativar modo debug ECDH');
-        console.log('  -h, --help            Mostrar esta ajuda');
+        console.log('  -s, --server <url>     URL do servidor (padrão: NODE_URL ou http://localhost:6666)');
+        console.log('  -d, --debug            Ativar logs detalhados de criptografia');
+        console.log('  -h, --help             Mostrar esta ajuda');
         console.log('');
         console.log(chalk.yellow('Exemplos:'));
         console.log('  node main.js --username Alice');
         console.log('  node main.js --username Bob --debug');
-        console.log('  node main.js --username Charlie --server http://192.168.1.100:3000');
+        console.log('  node main.js --username Charlie --server http://192.168.1.100:6666');
     }
 
     /**
@@ -124,7 +127,7 @@ class SecureMessageClient {
      */
     showWelcome() {
         console.clear();
-        console.log(chalk.green('Sistema de Mensagens Seguras - IDEA + ECDH'));
+        console.log(chalk.green('Sistema de Mensagens Seguras - ECDH + Ed25519 + AES-GCM'));
         console.log(chalk.blue('Usuário:'), chalk.white(this.username));
         console.log(chalk.blue('Servidor:'), chalk.white(this.serverUrl));
         console.log(chalk.blue('Debug:'), this.debugMode ? chalk.green('Ativado') : chalk.gray('Desativado'));
@@ -249,13 +252,6 @@ class SecureMessageClient {
             console.log(chalk.gray(''), data.message);
         });
 
-        this.wsClient.on('group_key_distributed', (data) => {
-            console.log(chalk.green(''), data.message);
-            // Armazenar chave de grupo
-            this.wsClient.storeGroupKey(data.groupName, data.groupKey);
-            console.log(chalk.blue(`🔑 Chave de grupo ${data.groupName} armazenada!`));
-        });
-
         this.wsClient.on('group_message_received', (data) => {
             this.messageHandler.handleGroupMessage(data);
         });
@@ -336,7 +332,10 @@ class SecureMessageClient {
         console.log(chalk.cyan('│ /groups        - Lista grupos           │'));
         console.log(chalk.cyan('│ /leave         - Sai do chat atual      │'));
         console.log(chalk.cyan('│ /status        - Status da conexão      │'));
+        console.log(chalk.cyan('│ /keys          - Mostra suas chaves     │'));
         console.log(chalk.cyan('│ /debug         - Toggle modo debug      │'));
+        console.log(chalk.cyan('│ /newprofile    - Simula reinstalação    │'));
+        console.log(chalk.cyan('│ /delete @user  - Remove TOFU de usuário │'));
         console.log(chalk.cyan('│ /quit          - Sair do sistema        │'));
         console.log(chalk.cyan('└─────────────────────────────────────────┘'));
         console.log('');

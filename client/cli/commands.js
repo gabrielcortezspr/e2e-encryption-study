@@ -3,6 +3,10 @@
  */
 
 const chalk = require('chalk');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { getKeypairFile, getTofuStore } = require('../crypto/ed25519-tofu');
 
 class CommandHandler {
     constructor(client) {
@@ -75,7 +79,7 @@ class CommandHandler {
         console.log(chalk.cyan('│ /groups        - Lista grupos           │'));
         console.log(chalk.cyan('│ /leave         - Sai do chat atual      │'));
         console.log(chalk.cyan('│ /status        - Status da conexão      │'));
-        console.log(chalk.cyan('│ /keys          - Mostra suas chaves      │'));
+        console.log(chalk.cyan('│ /keys          - Mostra suas chaves     │'));
         console.log(chalk.cyan('│ /debug         - Toggle modo debug      │'));
         console.log(chalk.cyan('│ /newprofile    - Simula reinstalação    │'));
         console.log(chalk.cyan('│ /delete @user  - Remove TOFU de usuário │'));
@@ -86,7 +90,7 @@ class CommandHandler {
         console.log('   - Para enviar mensagem, digite normalmente (sem /)');
         console.log('   - Use /chat <usuário> para conversar 1:1');
         console.log('   - Use /group <nome> para criar/entrar em grupos');
-        console.log('   - Use /debug para ver detalhes do ECDH');
+        console.log('   - Use /debug para ver detalhes da criptografia');
         console.log('');
         console.log(chalk.cyan('🔒 Segurança (TOFU):'));
         console.log('   - /newprofile: Simula reinstalação (gera nova identidade)');
@@ -240,9 +244,6 @@ class CommandHandler {
      * Mostra informações das chaves (incluindo chave privada)
      */
     showKeys() {
-        const crypto = require('crypto');
-        const fs = require('fs');
-        const path = require('path');
         const keyInfo = this.client.wsClient.getKeyInfo();
         
         if (keyInfo.error) {
@@ -260,7 +261,7 @@ class CommandHandler {
         console.log(chalk.magenta('└─────────────────────────────────────────────────────────────┘\n'));
 
         try {
-            const ed25519KeypairFile = path.join(__dirname, `ed25519_keypair_${this.client.username}.json`);
+            const ed25519KeypairFile = getKeypairFile(this.client.username);
             
             if (fs.existsSync(ed25519KeypairFile)) {
                 const ed25519Data = JSON.parse(fs.readFileSync(ed25519KeypairFile, 'utf8'));
@@ -276,7 +277,7 @@ class CommandHandler {
 
                 console.log(chalk.cyan('ED25519 - Identidade de Longo Prazo:'));
                 console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
-                console.log(chalk.gray(`📄 Arquivo: ed25519_keypair_${this.client.username}.json\n`));
+                console.log(chalk.gray(`📄 Arquivo: ${path.relative(process.cwd(), ed25519KeypairFile)}\n`));
                 
                 console.log(chalk.red('🔴 Chave Privada (NUNCA compartilhar):'));
                 console.log(chalk.gray(`   ${ed25519Data.privateKey.substring(0, 64)}...`));
@@ -297,9 +298,9 @@ class CommandHandler {
                 console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
                 console.log(chalk.cyan('TOFU - Identidades Conhecidas (Trust On First Use):'));
                 console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
-                console.log(chalk.gray(`📄 Arquivo: pinned_keys_${this.client.username}.json\n`));
+                const tofuFile = getTofuStore(this.client.username);
+                console.log(chalk.gray(`📄 Arquivo: ${path.relative(process.cwd(), tofuFile)}\n`));
 
-                const tofuFile = path.join(__dirname, `pinned_keys_${this.client.username}.json`);
                 if (fs.existsSync(tofuFile)) {
                     const pinnedKeys = JSON.parse(fs.readFileSync(tofuFile, 'utf8'));
                     const peerCount = Object.keys(pinnedKeys).length;
@@ -390,7 +391,7 @@ class CommandHandler {
                 } else {
                     console.log(chalk.white(`👤 Chat 1:1 com ${peer}:`));
                 }
-                console.log(chalk.gray(`   encKey (IDEA-128): ${key.toString('hex')}`));
+                console.log(chalk.gray(`   encKey (AES-128-GCM): ${key.toString('hex')}`));
                 console.log(chalk.gray(`   (${key.length} bytes / ${key.length * 8} bits)`));
                 console.log(chalk.gray(`   Derivada via: HKDF-SHA256(ECDH_shared_secret)\n`));
             });
@@ -410,7 +411,7 @@ class CommandHandler {
             
             this.client.wsClient.groupKeys.forEach((key, groupName) => {
                 console.log(chalk.white(`👥 Grupo "${groupName}":`));
-                console.log(chalk.gray(`   Chave de Grupo (IDEA-128): ${key.toString('hex')}`));
+                console.log(chalk.gray(`   Chave de Grupo (AES-128-GCM): ${key.toString('hex')}`));
                 console.log(chalk.gray(`   (${key.length} bytes / ${key.length * 8} bits)`));
                 console.log(chalk.gray(`   Tipo: Aleatória (gerada pelo criador)`));
                 console.log(chalk.gray(`   Recebida: Via envelope criptografado com chave pairwise\n`));
@@ -436,9 +437,6 @@ class CommandHandler {
      * Simula reinstalação da aplicação (gera novo perfil)
      */
     newProfile() {
-        const fs = require('fs');
-        const path = require('path');
-        
         console.log(chalk.yellow('\n⚠️  ATENÇÃO: Você está prestes a DELETAR seu perfil atual!'));
         console.log(chalk.yellow('   Isso vai remover:'));
         console.log(chalk.gray('   • Sua identidade Ed25519 (chave de longo prazo)'));
@@ -450,8 +448,8 @@ class CommandHandler {
         console.log(chalk.yellow('   Outros usuários receberão alerta TOFU ao falar com você.\n'));
         
         // Arquivos a deletar
-        const ed25519File = path.join(__dirname, `ed25519_keypair_${this.client.username}.json`);
-        const tofuFile = path.join(__dirname, `pinned_keys_${this.client.username}.json`);
+        const ed25519File = getKeypairFile(this.client.username);
+        const tofuFile = getTofuStore(this.client.username);
         
         let deleted = [];
         
@@ -487,9 +485,6 @@ class CommandHandler {
      * Deleta registro TOFU de um usuário específico
      */
     deleteTofuPin(args) {
-        const fs = require('fs');
-        const path = require('path');
-        
         if (args.length === 0) {
             console.log(chalk.red('❌ Use: /delete @usuario'));
             console.log(chalk.gray('   Exemplo: /delete @Alice'));
@@ -510,7 +505,7 @@ class CommandHandler {
             return;
         }
         
-        const tofuFile = path.join(__dirname, `pinned_keys_${this.client.username}.json`);
+        const tofuFile = getTofuStore(this.client.username);
         
         if (!fs.existsSync(tofuFile)) {
             console.log(chalk.yellow(`⚠️  Você não tem nenhum registro TOFU ainda`));

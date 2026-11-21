@@ -1,32 +1,28 @@
 {
   "name": "secure-message-server",
   "version": "1.0.0",
-  "description": "Servidor para sistema de mensagens seguras com IDEA + ECDH",
+  "description": "Servidor relay (Socket.IO) do chat com criptografia ponta a ponta",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
-    "test": "jest"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
-    "axios": "^1.5.0",
     "cors": "^2.8.5",
-    "crypto": "^1.0.1",
     "dotenv": "^17.2.3",
     "express": "^4.18.2",
-    "socket.io": "^4.7.2",
-    "uuid": "^9.0.0"
+    "socket.io": "^4.7.2"
   },
   "devDependencies": {
-    "jest": "^29.6.2",
     "nodemon": "^3.0.1"
   },
   "keywords": [
     "cryptography",
     "ecdh",
-    "idea",
+    "ed25519",
+    "aes-gcm",
     "secure-messaging"
   ],
-  "author": "Sistema de Mensagens Seguras",
+  "author": "gabrielcortezspr",
   "license": "MIT"
 }

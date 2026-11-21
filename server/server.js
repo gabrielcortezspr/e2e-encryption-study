@@ -1,20 +1,23 @@
 #!/usr/bin/env node
 /**
  * Servidor Principal do Sistema de Mensagens Seguras
- * Implementação JavaScript nativa para IDEA + ECDH
+ *
+ * O servidor é apenas um relay: guarda chaves PÚBLICAS (ECDH + Ed25519),
+ * roteia a troca de chaves e encaminha envelopes já cifrados. Ele nunca vê
+ * chaves privadas nem texto claro (toda a criptografia acontece no cliente).
  */
 
-// Carregar variáveis de ambiente
-require('dotenv').config({ path: '../config.env' });
+const path = require('path');
+
+// Carregar variáveis de ambiente (caminho relativo a este arquivo, não ao cwd)
+require('dotenv').config({ path: path.join(__dirname, '..', 'config.env') });
 
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
-const path = require('path');
 
 const WebSocketHandler = require('./src/websocket/WebSocketHandler');
-const IDEABridgeJS = require('./src/crypto/idea-bridge-js');
 
 class SecureMessageServer {
     constructor() {
@@ -28,7 +31,6 @@ class SecureMessageServer {
         });
         
         this.port = process.env.NODE_PORT || 6666;
-        this.ideaBridge = new IDEABridgeJS();
         
         this.setupMiddleware();
         this.setupRoutes();
@@ -41,7 +43,6 @@ class SecureMessageServer {
     setupMiddleware() {
         this.app.use(cors());
         this.app.use(express.json());
-        this.app.use(express.static(path.join(__dirname, 'public')));
     }
 
     /**
@@ -55,24 +56,25 @@ class SecureMessageServer {
                 service: 'Secure Message Server',
                 version: '1.0.0',
                 timestamp: new Date().toISOString(),
-                features: ['IDEA Encryption', 'ECDH Key Exchange', 'Group Chat', 'Real-time Messaging']
+                features: ['E2E Encryption (AES-128-GCM)', 'ECDH Key Exchange', 'Ed25519 + TOFU', 'Group Chat', 'Real-time Messaging']
             });
         });
 
-        // Rota de teste da ponte JavaScript
         // Rota de informações do sistema
         this.app.get('/info', (req, res) => {
             res.json({
                 system: 'Sistema de Mensagens Seguras',
                 architecture: 'JavaScript Nativo (Node.js)',
                 algorithms: {
-                    encryption: 'IDEA (International Data Encryption Algorithm)',
+                    encryption: 'AES-128-GCM (AEAD), feita no cliente',
                     keyExchange: 'ECDH (Elliptic Curve Diffie-Hellman)',
-                    curve: 'secp256k1'
+                    curve: 'secp256k1',
+                    keyDerivation: 'HKDF-SHA256',
+                    authentication: 'Ed25519 + TOFU'
                 },
                 features: [
-                    'Criptografia IDEA com chaves de 128 bits',
-                    'Troca de chaves ECDH segura',
+                    'Criptografia ponta a ponta com AES-128-GCM',
+                    'Troca de chaves ECDH autenticada com Ed25519',
                     'Chat 1:1 criptografado',
                     'Chat em grupo com chave compartilhada',
                     'Interface CLI completa',
@@ -86,7 +88,7 @@ class SecureMessageServer {
             });
         });
 
-        // Rota para servir arquivos estáticos (se houver interface web)
+        // Rota raiz
         this.app.get('/', (req, res) => {
             res.json({
                 message: 'Sistema de Mensagens Seguras - Servidor Ativo',

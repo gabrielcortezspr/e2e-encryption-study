@@ -1,6 +1,13 @@
 /**
- * Implementação simplificada e funcional do algoritmo IDEA em JavaScript
- * Versão que funciona corretamente para criptografia/descriptografia
+ * Implementação educativa do IDEA (International Data Encryption Algorithm)
+ *
+ * - Bloco de 64 bits, chave de 128 bits, 8 rodadas + transformação final
+ * - Operações: XOR, soma mod 2^16 e multiplicação mod 2^16+1
+ * - Modo ECB + PKCS#7 apenas para demonstração (ECB NÃO é seguro para dados reais)
+ *
+ * ESTE MÓDULO NÃO É USADO PELO CHAT. O protocolo do chat usa AES-128-GCM
+ * (ver client/crypto/envelope.js). Ele existe como material de estudo e é
+ * validado contra o vetor de teste oficial em experiments/idea/test-idea.js.
  */
 
 // Constantes IDEA
@@ -60,67 +67,60 @@ function invModMul(x) {
 }
 
 /**
- * Expande chave de 128 bits para 52 subchaves
+ * Expande chave de 128 bits para 52 subchaves de 16 bits.
+ * A cada 8 subchaves extraídas, a chave inteira é rotacionada 25 bits à esquerda.
  */
 function expandKey(keyBytes) {
     if (keyBytes.length !== 16) {
         throw new Error("Chave deve ter 16 bytes");
     }
-    
+
     // Converte para BigInt para operações de 128 bits
     let keyInt = 0n;
     for (let i = 0; i < 16; i++) {
         keyInt = (keyInt << 8n) | BigInt(keyBytes[i]);
     }
-    
+
     const subkeys = [];
     const mask128 = (1n << 128n) - 1n;
-    
+
     for (let i = 0; i < 52; i++) {
-        const subkey = Number((keyInt >> (128n - 16n)) & 0xFFFFn);
-        subkeys.push(subkey);
-        keyInt = ((keyInt << 25n) & mask128) | (keyInt >> (128n - 25n));
+        if (i > 0 && i % 8 === 0) {
+            keyInt = ((keyInt << 25n) & mask128) | (keyInt >> (128n - 25n));
+        }
+        const shift = BigInt(112 - 16 * (i % 8));
+        subkeys.push(Number((keyInt >> shift) & 0xFFFFn));
     }
-    
+
     return subkeys;
 }
 
 /**
- * Inverte subchaves para decriptação
+ * Calcula as 52 subchaves de decriptação a partir das de encriptação.
+ * Rodada de decriptação i usa as subchaves da rodada de encriptação (8 - i):
+ *   inverso multiplicativo de K1 e K4, inverso aditivo de K2 e K3
+ *   (trocados nas rodadas intermediárias) e K5/K6 da rodada anterior.
  */
-function invertSubkeys(encSubkeys) {
+function invertSubkeys(enc) {
     const dec = new Array(52);
-    let i = 0;
-    let j = 51;
-    
-    // Transformação final
-    dec[j--] = invModMul(encSubkeys[i++]);
-    dec[j--] = subMod(0, encSubkeys[i++]);
-    dec[j--] = subMod(0, encSubkeys[i++]);
-    dec[j--] = invModMul(encSubkeys[i++]);
-    
-    // 7 rodadas intermediárias
-    for (let round = 0; round < 7; round++) {
-        const t1 = encSubkeys[i++];
-        const t2 = encSubkeys[i++];
-        dec[j--] = t2;
-        dec[j--] = t1;
-        dec[j--] = invModMul(encSubkeys[i++]);
-        dec[j--] = subMod(0, encSubkeys[i++]);
-        dec[j--] = subMod(0, encSubkeys[i++]);
-        dec[j--] = invModMul(encSubkeys[i++]);
+
+    for (let i = 0; i <= 8; i++) {
+        const j = 8 - i;           // rodada de encriptação correspondente
+        const d = 6 * i;
+        const e = 6 * j;
+        const middle = i > 0 && i < 8;
+
+        dec[d] = invModMul(enc[e]);
+        dec[d + 1] = subMod(0, enc[e + (middle ? 2 : 1)]);
+        dec[d + 2] = subMod(0, enc[e + (middle ? 1 : 2)]);
+        dec[d + 3] = invModMul(enc[e + 3]);
+
+        if (i < 8) {
+            dec[d + 4] = enc[6 * (j - 1) + 4];
+            dec[d + 5] = enc[6 * (j - 1) + 5];
+        }
     }
-    
-    // Primeira rodada
-    const t1 = encSubkeys[i++];
-    const t2 = encSubkeys[i++];
-    dec[j--] = t2;
-    dec[j--] = t1;
-    dec[j--] = invModMul(encSubkeys[i++]);
-    dec[j--] = subMod(0, encSubkeys[i++]);
-    dec[j--] = subMod(0, encSubkeys[i++]);
-    dec[j--] = invModMul(encSubkeys[i++]);
-    
+
     return dec;
 }
 

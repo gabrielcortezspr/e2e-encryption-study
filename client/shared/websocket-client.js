@@ -6,10 +6,11 @@
 
 const io = require('socket.io-client');
 const EventEmitter = require('events');
+const crypto = require('crypto');
 const ECDHManual = require('../crypto/ecdh-manual');
-const IDEABridgeJS = require('../crypto/idea-bridge-js');
 const { setUsername, signECDHPublicKey, verifyAndPinPeer, ensureEd25519KeyPair } = require('../crypto/ed25519-tofu');
 const { deriveSessionKeys } = require('../crypto/hkdf');
+const { encryptMessage, decryptMessage } = require('../crypto/envelope');
 
 class WebSocketClient extends EventEmitter {
     constructor(serverUrl, username, debugMode = false) {
@@ -20,7 +21,6 @@ class WebSocketClient extends EventEmitter {
         this.isConnected = false;
         this.publicKey = null;
         this.ecdh = null; // Instância ECDH do cliente
-        this.ideaBridge = new IDEABridgeJS(); // Bridge IDEA para criptografia
         this.sharedKeys = new Map(); // Chaves compartilhadas (calculadas no cliente)
         this.groupKeys = new Map(); // Chaves de grupo
         this.debugMode = debugMode;
@@ -225,16 +225,6 @@ class WebSocketClient extends EventEmitter {
             this.emit('error', data);
         });
 
-        this.socket.on('group_key_distributed', (data) => {
-            this.emit('group_key_distributed', data);
-        });
-
-        this.socket.on('generate_group_key', (data) => {
-            // Gerar chave de grupo localmente (end-to-end) - metodo antigo (deprecated)
-            this.generateGroupKey(data);
-            this.emit('generate_group_key', data);
-        });
-
         this.socket.on('generate_and_distribute_group_key', (data) => {
             // Gerar e distribuir chave de grupo (apenas para criador do grupo)
             this.generateAndDistributeGroupKey(data);
@@ -277,7 +267,6 @@ class WebSocketClient extends EventEmitter {
             if (this.debugMode) {
                 console.log(`\n┌─── PILAR: INTEGRIDADE (Validação) + CONFIDENCIALIDADE (Decifra) ───┐`);
             }
-            const { decryptMessage } = require('../crypto/simple-crypto');
             const decrypted = decryptMessage(envelope, sharedKey, from, this.debugMode);
             if (this.debugMode) {
                 console.log('└──────────────────────────────────────────────────────────────┘\n');
@@ -325,7 +314,6 @@ class WebSocketClient extends EventEmitter {
             if (this.debugMode) {
                 console.log(`\n┌─── PILAR: INTEGRIDADE (Validação) + CONFIDENCIALIDADE (Decifra) ───┐`);
             }
-            const { decryptMessage } = require('../crypto/simple-crypto');
             const decrypted = decryptMessage(envelope, groupKey, from, this.debugMode);
             if (this.debugMode) {
                 console.log('└──────────────────────────────────────────────────────────────┘\n');
@@ -439,18 +427,15 @@ class WebSocketClient extends EventEmitter {
                 console.log('└──────────────────────────────────────────────────────────────┘');
             }
             
-            // Compatibilidade: manter ideaKey para bridge legado (temporário)
-            const ideaKey = encKey;
-
             // ARMAZENAR CHAVE COMPARTILHADA NO CLIENTE
             if (isGroup && groupName) {
                 // Para grupos, armazenar com chave única incluindo grupo
                 // Armazenar em ambas as ordens para facilitar busca
-                this.sharedKeys.set(`${groupName}:${targetUser}`, ideaKey);
+                this.sharedKeys.set(`${groupName}:${targetUser}`, encKey);
                 // Também armazenar com nosso username para busca reversa
                 // (o outro cliente vai usar nosso username como chave)
             } else {
-                this.sharedKeys.set(targetUser, ideaKey);
+                this.sharedKeys.set(targetUser, encKey);
             }
 
             // REMOVIDO: Nao reenviar chave publica de volta
@@ -465,147 +450,6 @@ class WebSocketClient extends EventEmitter {
             console.error('Erro ao calcular chave compartilhada:', error.message);
             // Remover da lista de processadas em caso de erro
             this.processedKeys.delete(keyId);
-        }
-    }
-
-    /**
-     * Troca chave pública com outro usuário
-     * (Mantido para compatibilidade, mas agora a lógica principal está em handleExchangePublicKey)
-     */
-    exchangePublicKey(targetUser, publicKey, options = {}) {
-        // Esta função agora apenas notifica o servidor
-        // O cálculo da chave compartilhada é feito em handleExchangePublicKey
-        if (!this.isConnected) {
-            throw new Error('Não conectado ao servidor');
-        }
-
-        const { isGroup = false, groupName = null } = options;
-
-        this.socket.emit('exchange_public_key', {
-            targetUser: targetUser,
-            publicKey: publicKey || this.publicKey,
-            isGroup: isGroup,
-            groupName: groupName
-        });
-    }
-
-    /**
-     * Armazena chave de grupo
-     */
-    storeGroupKey(groupName, groupKey) {
-        this.groupKeys.set(groupName, Buffer.from(groupKey, 'hex'));
-    }
-
-    /**
-     * Gera chave de grupo localmente a partir das chaves compartilhadas
-     * End-to-End: Chave de grupo é calculada no cliente
-     * 
-     * IMPORTANTE: Cada cliente só tem as chaves compartilhadas que ele calculou.
-     * Por exemplo, se o grupo tem [João, Jose, Aline]:
-     * - João tem: chaves com Jose e Aline
-     * - Jose tem: chaves com João e Aline
-     * - Aline tem: chaves com João e Jose
-     * 
-     * Para gerar a mesma chave de grupo, todos devem usar TODAS as chaves compartilhadas
-     * do grupo. Como cada cliente só tem suas próprias chaves, precisamos de uma abordagem diferente.
-     * 
-     * SOLUÇÃO: Usar apenas as chaves que este cliente tem (com os outros membros).
-     * A chave de grupo será o XOR de todas as chaves compartilhadas que este cliente calculou.
-     * 
-     * NOTA: Isso funciona porque cada par de usuários tem a MESMA chave compartilhada (ECDH),
-     * então quando fazemos XOR, a ordem não importa e todos chegam à mesma chave final.
-     */
-    generateGroupKey(data) {
-        const { groupName, members, expectedPairs } = data;
-
-        if (!groupName || !members) {
-            console.error('Dados insuficientes para gerar chave de grupo');
-            return;
-        }
-
-        try {
-            // Coletar TODAS as chaves compartilhadas que este cliente tem com outros membros do grupo
-            const sharedKeys = [];
-            const ourUsername = this.username;
-            
-            // Percorrer todos os membros do grupo
-            for (const member of members) {
-                // Pular nós mesmos
-                if (member === ourUsername) {
-                    continue;
-                }
-                
-                // Buscar chave compartilhada com este membro
-                // A chave está armazenada como `${groupName}:${member}`
-                const keyId = `${groupName}:${member}`;
-                let sharedKey = this.sharedKeys.get(keyId);
-                
-                // Fallback: tentar sem o prefixo do grupo
-                if (!sharedKey) {
-                    sharedKey = this.sharedKeys.get(member);
-                }
-                
-                if (sharedKey) {
-                    sharedKeys.push(sharedKey);
-                    if (this.debugMode) {
-                        console.log(`   Chave compartilhada encontrada com ${member}: ${sharedKey.toString('hex').substring(0, 16)}...`);
-                    }
-                } else {
-                    if (this.debugMode) {
-                        console.log(`   Chave compartilhada NAO encontrada com ${member}`);
-                        console.log(`      Tentando: ${keyId}, ${member}`);
-                        console.log(`      Chaves disponíveis: ${Array.from(this.sharedKeys.keys()).filter(k => k.includes(groupName) || k === member).join(', ')}`);
-                    }
-                }
-            }
-
-            // Verificar se temos chaves suficientes
-            // Cada cliente deve ter (numero de membros - 1) chaves compartilhadas
-            const expectedKeysForThisClient = members.length - 1;
-            
-            if (sharedKeys.length === 0) {
-                console.error(`Nenhuma chave compartilhada encontrada para o grupo ${groupName}`);
-                console.error(`   Esperado: ${expectedKeysForThisClient} chaves (uma para cada outro membro)`);
-                return;
-            }
-
-            if (sharedKeys.length < expectedKeysForThisClient) {
-                console.warn(`Chaves compartilhadas incompletas para o grupo ${groupName}`);
-                console.warn(`   Encontradas: ${sharedKeys.length}, Esperadas: ${expectedKeysForThisClient}`);
-                console.warn(`   A chave de grupo pode não funcionar corretamente!`);
-            }
-
-            if (this.debugMode) {
-                console.log(`Gerando chave de grupo ${groupName}:`);
-                console.log(`   Nossas chaves compartilhadas: ${sharedKeys.length} / ${expectedKeysForThisClient}`);
-                console.log(`   Total de pares no grupo: ${expectedPairs}`);
-            }
-
-            // Gerar chave de grupo usando XOR de todas as chaves compartilhadas que temos
-            // IMPORTANTE: Ordenar as chaves por nome do membro para garantir consistencia
-            // Mas como estamos usando apenas nossas chaves (n-1 chaves), todos terao o mesmo conjunto
-            const groupKey = Buffer.alloc(16); // 128 bits para IDEA
-            
-            sharedKeys.forEach(key => {
-                if (key && key.length === 16) {
-                    for (let i = 0; i < 16; i++) {
-                        groupKey[i] ^= key[i];
-                    }
-                }
-            });
-
-            // Armazenar chave de grupo
-            this.groupKeys.set(groupName, groupKey);
-
-            if (this.debugMode) {
-                console.log(`Chave de grupo ${groupName} gerada: ${groupKey.toString('hex')}`);
-                console.log(`   Usando ${sharedKeys.length} chaves compartilhadas`);
-            } else {
-                console.log(`Chave de grupo ${groupName} gerada com sucesso!`);
-            }
-
-        } catch (error) {
-            console.error(`Erro ao gerar chave de grupo ${groupName}:`, error.message);
         }
     }
 
@@ -630,11 +474,10 @@ class WebSocketClient extends EventEmitter {
             }
             
             // Gerar chave de grupo aleatoria (128 bits)
-            const crypto = require('crypto');
             const groupKey = crypto.randomBytes(16);
             
             if (this.debugMode) {
-                console.log('│ ► Gerando chave de grupo IDEA-128...');
+                console.log('│ ► Gerando chave de grupo AES-128...');
                 console.log(`│ ✓ Chave gerada: ${groupKey.toString('hex').substring(0, 16)}...`);
                 console.log('│');
                 console.log('│ ► Distribuindo chave para membros...');
@@ -666,7 +509,6 @@ class WebSocketClient extends EventEmitter {
                 }
 
                 // Criptografar chave de grupo usando a chave compartilhada com envelope
-                const { encryptMessage } = require('../crypto/simple-crypto');
                 const envelope = encryptMessage(
                     groupKey.toString('hex'),
                     sharedKey,
@@ -747,7 +589,6 @@ class WebSocketClient extends EventEmitter {
             }
 
             // Descriptografar chave de grupo do envelope
-            const { decryptMessage } = require('../crypto/simple-crypto');
             const groupKeyHex = decryptMessage(encryptedKey, sharedKey, from, this.debugMode);
             const groupKey = Buffer.from(groupKeyHex, 'hex');
 
@@ -791,7 +632,6 @@ class WebSocketClient extends EventEmitter {
             if (this.debugMode) {
                 console.log('\n┌─── PILAR: CONFIDENCIALIDADE (Cifra) + INTEGRIDADE (Tag) ────────┐');
             }
-            const { encryptMessage } = require('../crypto/simple-crypto');
             const envelope = encryptMessage(message, key, this.username, targetUser, isGroup, this.debugMode);
             if (this.debugMode) {
                 console.log('└──────────────────────────────────────────────────────────────┘\n');

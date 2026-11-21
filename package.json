@@ -1,0 +1,15 @@
+{
+  "name": "e2e-chat-cli",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chat em terminal com criptografia ponta a ponta (ECDH + Ed25519/TOFU + HKDF + AES-128-GCM), feito para estudo de criptografia",
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "server": "node server/server.js",
+    "client": "node client/cli/main.js",
+    "test": "node tests/test-integrity.js && node experiments/idea/test-idea.js",
+    "demo": "./start-test.sh"
+  },
+  "author": "gabrielcortezspr",
+  "license": "MIT"
+}

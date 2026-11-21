@@ -1,7 +1,11 @@
 /**
- * Implementação de criptografia com envelope v1 usando AES-128-GCM (AEAD)
- * Envelope inclui: versão, timestamp, sender, recipient, nonce, ciphertext, tag
- * Integridade garantida por GCM auth tag + AAD (metadados)
+ * Envelope v1: criptografia autenticada (AEAD) com AES-128-GCM
+ *
+ * Envelope: { v, ts, from, to, isGroup, nonce, ct, tag }
+ * - Confidencialidade: AES-128-GCM com nonce aleatório de 96 bits
+ * - Integridade/autenticidade: tag GCM cobre o ciphertext e, via AAD,
+ *   os metadados (v, ts, from, to, nonce)
+ * - Anti-replay: janela de timestamp (5 min) + cache de nonces já aceitos
  */
 
 const crypto = require('crypto');
@@ -52,7 +56,7 @@ function encryptMessage(message, key, sender, recipient, isGroup = false, debugM
         const tag = cipher.getAuthTag();
 
         if (debugMode) {
-            console.log('│ ✓ Mensagem criptografada com IDEA-128');
+            console.log('│ ✓ Mensagem criptografada (AES-128-GCM)');
             console.log(`│   Tag de autenticação: ${tag.toString('hex').substring(0, 16)}...`);
         }
 
@@ -123,19 +127,9 @@ function decryptMessage(envelope, key, expectedSender = null, debugMode = false)
         if (nonceCache.has(nonceKey)) {
             throw new Error('Nonce repetido detectado (possível ataque de replay)');
         }
-        nonceCache.set(nonceKey, ts);
         
         if (debugMode) {
             console.log('│ ✓ Nonce único (proteção anti-replay)');
-        }
-        
-        // Limpar cache antigo (evitar crescimento infinito)
-        if (nonceCache.size > 10000) {
-            const entries = Array.from(nonceCache.entries());
-            entries.sort((a, b) => a[1] - b[1]);
-            for (let i = 0; i < 5000; i++) {
-                nonceCache.delete(entries[i][0]);
-            }
         }
         
         // Recriar AAD
@@ -156,15 +150,34 @@ function decryptMessage(envelope, key, expectedSender = null, debugMode = false)
             decipher.final()
         ]).toString('utf8');
         
+        // Só registra o nonce depois que a tag foi verificada: assim um envelope
+        // forjado não consegue "queimar" o nonce de uma mensagem legítima.
+        rememberNonce(nonceKey, ts);
+        
         if (debugMode) {
             console.log('│ ✓ Tag de autenticação verificada');
-            console.log('│ ✓ Mensagem descriptografada com IDEA-128');
+            console.log('│ ✓ Mensagem descriptografada (AES-128-GCM)');
         }
         
         return decrypted;
     } catch (error) {
         console.error('❌ Erro ao validar/descriptografar envelope:', error.message);
         throw error;
+    }
+}
+
+/**
+ * Registra nonce aceito, limitando o tamanho do cache
+ */
+function rememberNonce(nonceKey, ts) {
+    nonceCache.set(nonceKey, ts);
+
+    if (nonceCache.size > 10000) {
+        const entries = Array.from(nonceCache.entries());
+        entries.sort((a, b) => a[1] - b[1]);
+        for (let i = 0; i < 5000; i++) {
+            nonceCache.delete(entries[i][0]);
+        }
     }
 }
 

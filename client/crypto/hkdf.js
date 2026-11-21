@@ -45,20 +45,20 @@ function hkdf(ikm, info, length = 16, salt = null) {
  * @param {boolean} debugMode - Se true, exibe logs detalhados
  * @returns {{encKey: Buffer, authKey: Buffer}} - Chaves de cifra (16 bytes) e autenticação (32 bytes)
  */
-function deriveSessionKeys(sharedSecret, context = 'IDEA-MSG-V1', debugMode = false) {
+function deriveSessionKeys(sharedSecret, context = 'E2E-MSG-V1', debugMode = false) {
     if (debugMode) {
         console.log('│ ► Derivando chave de sessão...');
         console.log(`│   Contexto: ${context}`);
     }
     
-    // Derivar 48 bytes: 16 para IDEA + 32 para autenticação
+    // Derivar 48 bytes: 16 para a chave AES-128-GCM + 32 reservados (authKey, hoje não usada)
     const okm = hkdf(sharedSecret, context, 48);
     
-    const encKey = okm.subarray(0, 16);   // IDEA-128
-    const authKey = okm.subarray(16, 48); // Autenticação
+    const encKey = okm.subarray(0, 16);   // AES-128-GCM
+    const authKey = okm.subarray(16, 48); // Reservada
     
     if (debugMode) {
-        console.log(`│ ✓ Chave IDEA derivada (${encKey.length} bytes)`);
+        console.log(`│ ✓ Chave de sessão derivada (${encKey.length} bytes)`);
     }
     
     return {

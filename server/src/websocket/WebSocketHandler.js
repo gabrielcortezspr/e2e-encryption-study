@@ -1,8 +1,20 @@
 /**
  * Gerenciador de WebSocket para o sistema de mensagens
- * End-to-End Encryption: Servidor apenas roteia mensagens criptografadas
+ * End-to-End Encryption: Servidor apenas roteia chaves públicas e envelopes cifrados
+ *
+ * Eventos recebidos do cliente:
+ *   user_connect, start_chat, send_message, join_group, leave_group,
+ *   distribute_group_key, leave_chat, list_users, list_groups, disconnect
+ *
+ * Eventos enviados ao cliente:
+ *   user_connected, user_joined, user_left, chat_started, chat_ready, chat_left,
+ *   exchange_public_key, message_sent, message_received, group_message_received,
+ *   group_joined, group_left, member_joined_group, member_left_group,
+ *   generate_and_distribute_group_key, group_key_received, clear_group_key,
+ *   users_list, groups_list, error
  */
 
+const crypto = require('crypto');
 const User = require('../models/User');
 const Group = require('../models/Group');
 
@@ -11,8 +23,6 @@ class WebSocketHandler {
         this.io = io;
         this.users = new Map(); // username -> User
         this.groups = new Map(); // groupName -> Group
-        // Removido: IDEABridgeJS (criptografia agora é feita no cliente)
-        // Removido: ECDHManual (chaves são geradas no cliente)
         
         this.setupEventHandlers();
     }
@@ -32,11 +42,6 @@ class WebSocketHandler {
             // Evento: Iniciar chat 1:1
             socket.on('start_chat', (data) => {
                 this.handleStartChat(socket, data);
-            });
-
-            // Evento: Trocar chaves públicas
-            socket.on('exchange_public_key', (data) => {
-                this.handleExchangePublicKey(socket, data);
             });
 
             // Evento: Enviar mensagem
@@ -121,7 +126,6 @@ class WebSocketHandler {
             socket.username = username;
 
             // Calcular fingerprint Ed25519 para mostrar identidade única
-            const crypto = require('crypto');
             const ed25519Fingerprint = crypto.createHash('sha256').update(ed25519Pub, 'hex').digest('hex');
             
             console.log(`Usuario conectado: ${username}`);
@@ -243,63 +247,6 @@ class WebSocketHandler {
         } catch (error) {
             console.error('Erro ao iniciar chat:', error);
             socket.emit('error', { message: 'Erro interno do servidor' });
-        }
-    }
-
-    /**
-     * Manipula troca de chaves públicas
-     * End-to-End: Apenas roteia chaves publicas (calculo de chave compartilhada é feito no cliente)
-     * NOTA: Para chat 1:1, o roteamento inicial é feito no handleStartChat
-     * Esta funcao é usada principalmente para grupos e re-trocas de chave
-     */
-    async handleExchangePublicKey(socket, data) {
-        try {
-            const { targetUser, publicKey, isGroup, groupName } = data;
-            const username = socket.username;
-
-            if (!username || !targetUser || !publicKey) {
-                socket.emit('error', { message: 'Dados inválidos' });
-                return;
-            }
-
-            const user = this.users.get(username);
-            const target = this.users.get(targetUser);
-
-            if (!user || !target) {
-                socket.emit('error', { message: 'Usuário não encontrado' });
-                return;
-            }
-
-            // Apenas para grupos ou situacoes especiais
-            // Para chat 1:1, o servidor ja fez o roteamento no handleStartChat
-            if (isGroup && groupName) {
-                console.log(`Rotendo chave publica no grupo: ${username} -> ${targetUser} (${groupName})`);
-
-                // Enviar chave publica para o destinatario no contexto de grupo
-                this.io.to(target.socketId).emit('exchange_public_key', {
-                    targetUser: username,
-                    publicKey: publicKey, // Chave publica de quem enviou
-                    isGroup: true,
-                    groupName: groupName
-                });
-
-                // Notificar sucesso
-                socket.emit('key_exchanged', {
-                    success: true,
-                    targetUser: targetUser,
-                    message: `Chave publica trocada no grupo ${groupName}!`,
-                    isGroup: true,
-                    groupName: groupName
-                });
-            } else {
-                // Para chat 1:1, nao fazer nada aqui (ja foi feito no handleStartChat)
-                // Apenas log para debug
-                console.log(`Troca de chave 1:1 ja processada no handleStartChat: ${username} <-> ${targetUser}`);
-            }
-
-        } catch (error) {
-            console.error('Erro na troca de chaves:', error);
-            socket.emit('error', { message: 'Erro na troca de chaves' });
         }
     }
 
@@ -555,7 +502,13 @@ class WebSocketHandler {
                 return;
             }
 
+            if (!Array.isArray(encryptedKeys)) {
+                socket.emit('error', { message: 'Dados inválidos' });
+                return;
+            }
+
             console.log(`🔐 Distribuindo chave de grupo ${groupName} para ${encryptedKeys.length} membros`);
+            group.markKeyDistributed();
 
             // ✅ Rotear chave criptografada para cada membro
             encryptedKeys.forEach(({ member, encryptedKey }) => {
@@ -813,7 +766,7 @@ class WebSocketHandler {
                         reason: 'Você é o único membro restante'
                     });
                 }
-                group.clearAllKeys();
+                group.invalidateKey();
                 console.log(`ℹ️  Grupo ${groupName} agora tem apenas 1 membro, chaves limpas`);
             } else {
                 // Grupo vazio, pode ser removido
@@ -883,21 +836,35 @@ class WebSocketHandler {
     /**
      * Manipula desconexão
      */
-    handleDisconnect(socket) {
+    async handleDisconnect(socket) {
         const username = socket.username;
-        
-        if (username && this.users.has(username)) {
-            const user = this.users.get(username);
-            user.setOffline();
-            
-            console.log(`👋 Usuário desconectado: ${username}`);
-            
-            // Notificar outros usuários
-            socket.broadcast.emit('user_left', {
-                username: username,
-                message: `${username} saiu do sistema`
-            });
+        const user = username && this.users.get(username);
+
+        // Ignora sockets que não completaram user_connect ou já foram substituídos
+        if (!user || user.socketId !== socket.id) {
+            return;
         }
+
+        user.setOffline();
+
+        // Sair de todos os grupos (dispara re-key para os membros restantes)
+        for (const group of Array.from(this.groups.values())) {
+            if (group.isMember(username)) {
+                await this.handleLeaveGroup(socket, { groupName: group.name });
+            }
+        }
+
+        // Remover o usuário: libera o username para reconexão.
+        // A chave ECDH dele era efêmera, então uma reconexão gera chaves novas.
+        this.users.delete(username);
+
+        console.log(`👋 Usuário desconectado: ${username}`);
+
+        // Notificar outros usuários
+        socket.broadcast.emit('user_left', {
+            username: username,
+            message: `${username} saiu do sistema`
+        });
     }
 }
 

@@ -1,21 +1,50 @@
+/**
+ * Identidade Ed25519 persistente + TOFU (Trust On First Use)
+ *
+ * - Cada usuário tem um par Ed25519 de longo prazo, salvo em disco
+ * - A chave pública ECDH efêmera é assinada com a chave Ed25519
+ * - No primeiro contato com um peer, o fingerprint (SHA-256) da chave Ed25519
+ *   dele é "pinado"; se mudar depois, a conexão é rejeitada (possível MITM)
+ *
+ * Arquivos (fora do git), por usuário, em client/.keys/ (ou $KEYS_DIR):
+ *   ed25519_keypair_<user>.json  - par de chaves (contém a chave PRIVADA)
+ *   pinned_keys_<user>.json      - fingerprints TOFU dos peers conhecidos
+ */
+
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+const KEYS_DIR = process.env.KEYS_DIR || path.join(__dirname, '..', '.keys');
+
 let currentUsername = null;
 
-function getKeypairFile() {
-    if (!currentUsername) {
+function requireUsername(username) {
+    const name = username || currentUsername;
+    if (!name) {
         throw new Error('Username não configurado. Chame setUsername() primeiro.');
     }
-    return path.join(__dirname, '..', 'cli', `ed25519_keypair_${currentUsername}.json`);
+    return name;
 }
 
-function getTofuStore() {
-    if (!currentUsername) {
-        throw new Error('Username não configurado. Chame setUsername() primeiro.');
+function ensureKeysDir() {
+    if (!fs.existsSync(KEYS_DIR)) {
+        fs.mkdirSync(KEYS_DIR, { recursive: true, mode: 0o700 });
     }
-    return path.join(__dirname, '..', 'cli', `pinned_keys_${currentUsername}.json`);
+}
+
+/**
+ * Caminho do arquivo com o par Ed25519 do usuário
+ */
+function getKeypairFile(username) {
+    return path.join(KEYS_DIR, `ed25519_keypair_${requireUsername(username)}.json`);
+}
+
+/**
+ * Caminho do arquivo com os pins TOFU do usuário
+ */
+function getTofuStore(username) {
+    return path.join(KEYS_DIR, `pinned_keys_${requireUsername(username)}.json`);
 }
 
 /**
@@ -29,7 +58,7 @@ function setUsername(username) {
 /**
  * Carrega ou gera par de chaves Ed25519 persistente
  * @param {boolean} debugMode - Se true, exibe logs detalhados
- * @returns {{publicKey: string, privateKey: string}} - Chaves em formato PEM hex
+ * @returns {{publicKey: string, privateKey: string}} - Chaves em DER (SPKI/PKCS#8) codificadas em hex
  */
 function ensureEd25519KeyPair(debugMode = false) {
     const KEYPAIR_FILE = getKeypairFile();
@@ -61,9 +90,10 @@ function ensureEd25519KeyPair(debugMode = false) {
         console.log(`│   ID: ${fingerprint.substring(0, 16)}...`);
     }
     
-    // Persistir
+    // Persistir (somente o dono pode ler: contém a chave privada)
     try {
-        fs.writeFileSync(KEYPAIR_FILE, JSON.stringify(keypair, null, 2));
+        ensureKeysDir();
+        fs.writeFileSync(KEYPAIR_FILE, JSON.stringify(keypair, null, 2), { mode: 0o600 });
         console.log('✓ Par Ed25519 gerado e persistido em', KEYPAIR_FILE);
     } catch (err) {
         console.error('❌ Erro ao salvar chave Ed25519:', err.message);
@@ -129,6 +159,7 @@ function loadPins() {
 function savePins(pins) {
     const TOFU_STORE = getTofuStore();
     try {
+        ensureKeysDir();
         fs.writeFileSync(TOFU_STORE, JSON.stringify(pins, null, 2));
     } catch (err) {
         console.error('Erro ao salvar pins TOFU:', err.message);
@@ -248,6 +279,9 @@ function getLocalEd25519PublicKey() {
 }
 
 module.exports = {
+    KEYS_DIR,
+    getKeypairFile,
+    getTofuStore,
     setUsername,
     ensureEd25519KeyPair,
     signECDHPublicKey,

@@ -1,3 +1,13 @@
-/server/node_modules
-/client/node_modules
+# Dependências
+node_modules/
 /.venv
+
+# Chaves geradas localmente (contêm chaves PRIVADAS Ed25519 e pins TOFU)
+client/.keys/
+ed25519_keypair_*.json
+pinned_keys_*.json
+
+# Sistema / editor
+.DS_Store
+.vscode/
+*.log
