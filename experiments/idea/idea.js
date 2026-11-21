@@ -1,21 +1,21 @@
 /**
- * Implementação educativa do IDEA (International Data Encryption Algorithm)
+ * Educational implementation of IDEA (International Data Encryption Algorithm)
  *
- * - Bloco de 64 bits, chave de 128 bits, 8 rodadas + transformação final
- * - Operações: XOR, soma mod 2^16 e multiplicação mod 2^16+1
- * - Modo ECB + PKCS#7 apenas para demonstração (ECB NÃO é seguro para dados reais)
+ * - 64-bit block, 128-bit key, 8 rounds + output transformation
+ * - Operations: XOR, addition mod 2^16 and multiplication mod 2^16+1
+ * - ECB mode + PKCS#7 for demonstration only (ECB is NOT secure for real data)
  *
- * ESTE MÓDULO NÃO É USADO PELO CHAT. O protocolo do chat usa AES-128-GCM
- * (ver client/crypto/envelope.js). Ele existe como material de estudo e é
- * validado contra o vetor de teste oficial em experiments/idea/test-idea.js.
+ * THIS MODULE IS NOT USED BY THE CHAT. The chat protocol uses AES-128-GCM
+ * (see client/crypto/envelope.js). It exists as study material and is
+ * validated against the official test vector in experiments/idea/test-idea.js.
  */
 
-// Constantes IDEA
+// IDEA constants
 const MODULO_ADD = 65536;  // 2^16
 const MODULO_MUL = 65537;  // 2^16 + 1
 
 /**
- * Multiplicação módulo 65537 com tratamento especial do zero
+ * Multiplication modulo 65537 (0 represents 2^16)
  */
 function mulMod(x, y) {
     if (x === 0) x = MODULO_ADD;
@@ -25,21 +25,21 @@ function mulMod(x, y) {
 }
 
 /**
- * Soma módulo 65536
+ * Addition modulo 65536
  */
 function addMod(x, y) {
     return (x + y) & 0xFFFF;
 }
 
 /**
- * Subtração módulo 65536
+ * Subtraction modulo 65536
  */
 function subMod(x, y) {
     return (x - y) & 0xFFFF;
 }
 
 /**
- * Algoritmo de Euclides estendido para inverso multiplicativo
+ * Extended Euclidean algorithm (for the multiplicative inverse)
  */
 function extendedGcd(a, b) {
     if (b === 0) {
@@ -50,14 +50,14 @@ function extendedGcd(a, b) {
 }
 
 /**
- * Inverso multiplicativo módulo 65537
+ * Multiplicative inverse modulo 65537
  */
 function invModMul(x) {
     if (x === 0) return 0;
     
     const [gcd, a] = extendedGcd(x, MODULO_MUL);
     if (gcd !== 1) {
-        throw new Error(`Sem inverso multiplicativo para ${x}`);
+        throw new Error(`No multiplicative inverse for ${x}`);
     }
     
     let inv = a % MODULO_MUL;
@@ -67,15 +67,15 @@ function invModMul(x) {
 }
 
 /**
- * Expande chave de 128 bits para 52 subchaves de 16 bits.
- * A cada 8 subchaves extraídas, a chave inteira é rotacionada 25 bits à esquerda.
+ * Expands the 128-bit key into 52 16-bit subkeys.
+ * After every 8 subkeys, the whole key is rotated left by 25 bits.
  */
 function expandKey(keyBytes) {
     if (keyBytes.length !== 16) {
-        throw new Error("Chave deve ter 16 bytes");
+        throw new Error("Key must be 16 bytes");
     }
 
-    // Converte para BigInt para operações de 128 bits
+    // Use BigInt for 128-bit operations
     let keyInt = 0n;
     for (let i = 0; i < 16; i++) {
         keyInt = (keyInt << 8n) | BigInt(keyBytes[i]);
@@ -96,16 +96,16 @@ function expandKey(keyBytes) {
 }
 
 /**
- * Calcula as 52 subchaves de decriptação a partir das de encriptação.
- * Rodada de decriptação i usa as subchaves da rodada de encriptação (8 - i):
- *   inverso multiplicativo de K1 e K4, inverso aditivo de K2 e K3
- *   (trocados nas rodadas intermediárias) e K5/K6 da rodada anterior.
+ * Computes the 52 decryption subkeys from the encryption subkeys.
+ * Decryption round i uses the subkeys of encryption round (8 - i):
+ *   multiplicative inverse of K1 and K4, additive inverse of K2 and K3
+ *   (swapped in the middle rounds) and K5/K6 of the previous round.
  */
 function invertSubkeys(enc) {
     const dec = new Array(52);
 
     for (let i = 0; i <= 8; i++) {
-        const j = 8 - i;           // rodada de encriptação correspondente
+        const j = 8 - i;           // matching encryption round
         const d = 6 * i;
         const e = 6 * j;
         const middle = i > 0 && i < 8;
@@ -125,14 +125,14 @@ function invertSubkeys(enc) {
 }
 
 /**
- * Criptografa um bloco de 8 bytes
+ * Encrypts one 8-byte block
  */
 function encryptBlock(block, subkeys) {
     if (block.length !== 8) {
-        throw new Error("Bloco deve ter 8 bytes");
+        throw new Error("Block must be 8 bytes");
     }
     
-    // Converte para 4 palavras de 16 bits (big-endian)
+    // Split into four 16-bit words (big-endian)
     let x1 = (block[0] << 8) | block[1];
     let x2 = (block[2] << 8) | block[3];
     let x3 = (block[4] << 8) | block[5];
@@ -140,7 +140,7 @@ function encryptBlock(block, subkeys) {
     
     let ptr = 0;
     
-    // 8 rodadas principais
+    // 8 main rounds
     for (let round = 0; round < 8; round++) {
         const k1 = subkeys[ptr++];
         const k2 = subkeys[ptr++];
@@ -167,7 +167,7 @@ function encryptBlock(block, subkeys) {
         x3 = y2 ^ t5;
     }
     
-    // Transformação final
+    // Output transformation
     const k1 = subkeys[48];
     const k2 = subkeys[49];
     const k3 = subkeys[50];
@@ -178,7 +178,7 @@ function encryptBlock(block, subkeys) {
     const z3 = addMod(x2, k3);
     const z4 = mulMod(x4, k4);
     
-    // Converte de volta para bytes
+    // Back to bytes
     const result = Buffer.alloc(8);
     result[0] = (z1 >> 8) & 0xFF;
     result[1] = z1 & 0xFF;
@@ -193,14 +193,14 @@ function encryptBlock(block, subkeys) {
 }
 
 /**
- * Descriptografa um bloco de 8 bytes
+ * Decrypts one 8-byte block (same structure, decryption subkeys)
  */
 function decryptBlock(block, decSubkeys) {
     return encryptBlock(block, decSubkeys);
 }
 
 /**
- * Aplica padding PKCS#7
+ * Applies PKCS#7 padding
  */
 function padPkcs7(data, blockSize = 8) {
     const padLen = blockSize - (data.length % blockSize);
@@ -212,7 +212,7 @@ function padPkcs7(data, blockSize = 8) {
 }
 
 /**
- * Remove padding PKCS#7
+ * Removes PKCS#7 padding
  */
 function unpadPkcs7(data) {
     if (data.length === 0) return data;
@@ -222,7 +222,7 @@ function unpadPkcs7(data) {
 }
 
 /**
- * Criptografa string usando IDEA
+ * Encrypts a string with IDEA (ECB, demo only)
  */
 function encryptIdea(plaintext, keyBytes) {
     const subkeys = expandKey(keyBytes);
@@ -239,7 +239,7 @@ function encryptIdea(plaintext, keyBytes) {
 }
 
 /**
- * Descriptografa usando IDEA
+ * Decrypts with IDEA (ECB, demo only)
  */
 function decryptIdea(cipherBytes, keyBytes) {
     const encSub = expandKey(keyBytes);

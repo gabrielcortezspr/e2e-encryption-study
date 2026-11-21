@@ -1,125 +1,131 @@
-# 🔐 Chat E2E no terminal: ECDH + Ed25519 + AES-GCM
+# E2E Encryption Study
 
-Chat de terminal (Node.js) com **criptografia ponta a ponta**, feito como projeto
-de estudo de criptografia aplicada. O servidor só faz **relay**: ele nunca vê
-chaves privadas nem texto claro.
+A study project: an **end-to-end encrypted terminal chat** written in Node.js,
+built to learn applied cryptography by implementing the pieces of a secure
+messaging protocol one by one. The server is only a **relay**: it never sees
+private keys or plaintext.
 
-| Camada | O que usa | Onde está |
+| Layer | What it uses | Where |
 |---|---|---|
-| Acordo de chaves | ECDH efêmero, curva secp256k1 | `client/crypto/ecdh-manual.js` |
-| Autenticação das chaves | Assinatura Ed25519 + TOFU (*Trust On First Use*) | `client/crypto/ed25519-tofu.js` |
-| Derivação de chaves | HKDF-SHA256 (RFC 5869) | `client/crypto/hkdf.js` |
-| Cifra + integridade | AES-128-GCM (AEAD) em um "envelope v1" | `client/crypto/envelope.js` |
-| Anti-replay | Janela de timestamp (5 min) + cache de nonces | `client/crypto/envelope.js` |
-| Grupos | Chave aleatória do grupo distribuída por canais pairwise, com re-key quando alguém entra ou sai | `client/shared/websocket-client.js` |
+| Key agreement | Ephemeral ECDH, secp256k1 curve | [`client/crypto/ecdh-manual.js`](client/crypto/ecdh-manual.js) |
+| Key authentication | Ed25519 signatures + TOFU (*Trust On First Use*) | [`client/crypto/ed25519-tofu.js`](client/crypto/ed25519-tofu.js) |
+| Key derivation | HKDF-SHA256 (RFC 5869) | [`client/crypto/hkdf.js`](client/crypto/hkdf.js) |
+| Encryption + integrity | AES-128-GCM (AEAD) inside a "v1 envelope" | [`client/crypto/envelope.js`](client/crypto/envelope.js) |
+| Anti-replay | Timestamp window (5 min) + nonce cache | [`client/crypto/envelope.js`](client/crypto/envelope.js) |
+| Groups | Random group key distributed over pairwise channels, re-keyed when members join or leave | [`client/shared/websocket-client.js`](client/shared/websocket-client.js) |
 
-> **Sobre o IDEA:** o projeto nasceu como "message-idea" e a ideia inicial era
-> cifrar as mensagens com IDEA. A versão final usa **AES-128-GCM**. A
-> implementação do IDEA ficou em [`experiments/idea/`](experiments/idea/) como
-> material de estudo e é validada contra o vetor de teste oficial, mas o chat
-> **não** a usa.
+> **About IDEA:** the project started as `idea-message`, with the plan of
+> encrypting messages with the IDEA block cipher. The final protocol uses
+> **AES-128-GCM** instead. The IDEA implementation lives in
+> [`experiments/idea/`](experiments/idea/) as study material and is checked
+> against the official test vector, but the chat does **not** use it.
 
 ---
 
-## 🚀 Como rodar
+## 🚀 Getting started
 
-Requisitos: Node.js 18+.
+Requirements: Node.js 18+.
 
 ```bash
-npm run install:all        # instala dependências de server/ e client/
+npm run install:all        # installs server/ and client/ dependencies
 ```
 
-**Manual (um terminal para cada):**
+**Manually (one terminal each):**
 
 ```bash
-npm run server                                   # servidor na porta 6666
+npm run server                                   # server on port 6666
 node client/cli/main.js --username Alice
-node client/cli/main.js --username Bob --debug   # --debug mostra cada etapa criptográfica
+node client/cli/main.js --username Bob --debug   # --debug prints every crypto step
 ```
 
-**Automático:** `./start-test.sh` (ou `./start-test.sh --debug`) abre o servidor e
-3 clientes (Alice, Bob, Charlie) com gnome-terminal, xterm, tmux ou screen.
+**Automatically:** `./start-test.sh` (or `./start-test.sh --debug`) opens the
+server and three clients (Alice, Bob, Charlie) using gnome-terminal, xterm,
+tmux or screen.
 
-A porta e a URL ficam em [`config.env`](config.env) (`NODE_PORT`, `NODE_URL`).
+The port and URL are set in [`config.env`](config.env) (`NODE_PORT`, `NODE_URL`).
 
-### Comandos no cliente
+### Client commands
 
-| Comando | Descrição |
+| Command | Description |
 |---|---|
-| `/users` | Lista usuários online |
-| `/chat <user>` | Inicia chat 1:1 (troca de chaves autenticada) |
-| `/group <nome>` | Cria ou entra em um grupo |
-| `/groups` | Lista grupos |
-| `/leave` | Sai do chat ou do grupo atual (sair do grupo dispara re-key) |
-| `/status` | Status da conexão |
-| `/keys` | Mostra suas chaves (Ed25519, ECDH, chaves de sessão e pins TOFU) |
-| `/debug` | Liga/desliga logs detalhados |
-| `/newprofile` | Apaga sua identidade Ed25519 (simula reinstalação) |
-| `/delete @user` | Esquece o pin TOFU de alguém (para aceitar uma nova identidade) |
-| `/quit` | Sai |
+| `/users` | List online users |
+| `/chat <user>` | Start a 1:1 chat (authenticated key exchange) |
+| `/group <name>` | Create or join a group |
+| `/groups` | List groups |
+| `/leave` | Leave the current chat or group (leaving a group triggers a re-key) |
+| `/status` | Connection status |
+| `/keys` | Show your keys (Ed25519, ECDH, session keys and TOFU pins) |
+| `/debug` | Toggle detailed logs |
+| `/newprofile` | Delete your Ed25519 identity (simulates a reinstall) |
+| `/delete @user` | Forget someone's TOFU pin (to accept a new identity) |
+| `/quit` | Exit |
 
-Qualquer texto que não comece com `/` é enviado ao chat atual.
+Any text that does not start with `/` is sent to the current chat.
 
 ---
 
-## 🧪 Testes
+## 🧪 Tests
 
 ```bash
 npm test
 ```
 
-- `tests/test-integrity.js`: Ed25519, TOFU (incluindo o alerta de identidade
-  trocada), ECDH, HKDF (com o vetor 1 da RFC 5869) e o envelope AES-GCM
-  (adulteração de ciphertext e de metadados, replay, remetente errado,
-  timestamp vencido)
-- `experiments/idea/test-idea.js`: IDEA contra o vetor oficial + ida e volta aleatória
+- [`tests/test-integrity.js`](tests/test-integrity.js): Ed25519, TOFU
+  (including the changed-identity alert), ECDH, HKDF (with RFC 5869 test
+  vector 1) and the AES-GCM envelope (tampered ciphertext and metadata,
+  replay, wrong sender, expired timestamp)
+- [`experiments/idea/test-idea.js`](experiments/idea/test-idea.js): IDEA
+  against the official test vector, plus random round trips
 
-Roteiros de teste manual: [`docs/testes-manuais/`](docs/testes-manuais/).
+Manual test scenarios (TOFU alerts, `/newprofile`, groups):
+[`docs/MANUAL_TESTS.md`](docs/MANUAL_TESTS.md).
 
-Para abrir um envelope capturado no modo debug:
+To open an envelope captured in debug mode:
 
 ```bash
-node tools/decrypt-envelope.js <chave_hex> '<envelope_json>'
+node tools/decrypt-envelope.js <key_hex> '<envelope_json>'
 ```
 
 ---
 
-## 📁 Estrutura
+## 📁 Project layout
 
 ```
 ├── client/
-│   ├── cli/            # interface de terminal (main, comandos, exibição)
-│   ├── crypto/         # ECDH, Ed25519/TOFU, HKDF, envelope AES-GCM
-│   ├── shared/         # WebSocketClient: protocolo + toda a criptografia
-│   └── .keys/          # (gerado, fora do git) identidade Ed25519 e pins TOFU
+│   ├── cli/            # terminal UI (entry point, commands, message display)
+│   ├── crypto/         # ECDH, Ed25519/TOFU, HKDF, AES-GCM envelope
+│   ├── shared/         # WebSocketClient: protocol + all client-side crypto
+│   └── .keys/          # (generated, git-ignored) Ed25519 identity and TOFU pins
 ├── server/
-│   ├── server.js       # Express + Socket.IO (rotas /status e /info)
+│   ├── server.js       # Express + Socket.IO (/status and /info routes)
 │   └── src/
 │       ├── models/     # User, Group
-│       └── websocket/  # WebSocketHandler: roteamento de chaves e envelopes
-├── experiments/idea/   # IDEA educativo (não usado pelo chat) + testes
-├── tests/              # testes automatizados
-├── tools/              # utilitário para descriptografar envelopes
-├── docs/               # documentação detalhada
-├── config.env          # porta/URL do servidor
-└── start-test.sh       # sobe servidor + 3 clientes
+│       └── websocket/  # WebSocketHandler: routes keys and envelopes
+├── experiments/idea/   # educational IDEA cipher (not used by the chat) + tests
+├── tests/              # automated tests
+├── tools/              # envelope decryption utility
+├── docs/               # detailed documentation
+├── config.env          # server port/URL
+└── start-test.sh       # starts the server + 3 clients
 ```
 
-## 📚 Documentação
+## 📚 Documentation
 
-- [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md): protocolo, eventos, formato do envelope e **limitações conhecidas**
-- [`docs/FLUXO_COMPLETO.md`](docs/FLUXO_COMPLETO.md): passo a passo detalhado (1:1, grupo, entrada/saída, saída do debug)
-- [`docs/INTEGRIDADE.md`](docs/INTEGRIDADE.md): Ed25519 + TOFU explicados, com cenários de MITM
-- [`docs/historico/`](docs/historico/): documentos da versão antiga (IDEA), mantidos como registro
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): protocol, events, envelope format and **known limitations**
+- [`docs/INTEGRITY.md`](docs/INTEGRITY.md): Ed25519 + TOFU explained, with MITM scenarios
+- [`docs/MANUAL_TESTS.md`](docs/MANUAL_TESTS.md): step-by-step manual test scenarios
 
-## ⚠️ Aviso
+The original study notes, written in Portuguese while the project was being
+built, are preserved in the git history (first commit).
 
-Projeto **educacional**. Ele mostra as ideias de um protocolo E2E, mas não foi
-auditado e tem limitações conhecidas (veja
-[ARQUITETURA.md](docs/ARQUITETURA.md#limitações-conhecidas)). Não use para
-comunicação que realmente precise ser sigilosa: para isso, prefira o Signal
-Protocol ou o MLS.
+## ⚠️ Disclaimer
 
-## Licença
+This is a **study project**. It shows how the ideas behind an E2E protocol
+fit together, but it has not been audited and has known limitations (see
+[ARCHITECTURE.md](docs/ARCHITECTURE.md#known-limitations)). Do not use it for
+communication that actually needs to stay private: use the Signal Protocol or
+MLS for that.
 
-MIT
+## License
+
+[MIT](LICENSE)

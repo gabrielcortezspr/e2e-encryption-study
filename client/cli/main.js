@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Cliente CLI Principal do Sistema de Mensagens Seguras
- * Uso: node client/cli/main.js --username Alice [--server URL] [--debug]
+ * CLI client entry point
+ * Usage: node client/cli/main.js --username Alice [--server URL] [--debug]
  */
 
 const path = require('path');
 
-// Carregar variáveis de ambiente (caminho relativo a este arquivo, não ao cwd)
-require('dotenv').config({ path: path.join(__dirname, '..', '..', 'config.env') });
+// Load environment variables (path relative to this file, not to the cwd)
+require('dotenv').config({ path: path.join(__dirname, '..', '..', 'config.env'), quiet: true });
 
 const readline = require('readline');
 const chalk = require('chalk');
@@ -25,13 +25,13 @@ class SecureMessageClient {
         this.isConnected = false;
         this.currentChat = null;
         this.debugMode = false;
-        
-        this.setupReadline();
+
         this.parseArguments();
+        this.setupReadline();
     }
 
     /**
-     * Configura interface readline
+     * Sets up the readline interface
      */
     setupReadline() {
         this.rl = readline.createInterface({
@@ -50,11 +50,11 @@ class SecureMessageClient {
     }
 
     /**
-     * Parse argumentos da linha de comando
+     * Parses command-line arguments
      */
     parseArguments() {
         const args = process.argv.slice(2);
-        
+
         for (let i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case '--username':
@@ -80,35 +80,35 @@ class SecureMessageClient {
         }
 
         if (!this.username) {
-            console.log(chalk.red('❌ Username é obrigatório!'));
-            console.log(chalk.yellow('💡 Use: node main.js --username SeuNome'));
+            console.log(chalk.red('❌ Username is required!'));
+            console.log(chalk.yellow('💡 Use: node client/cli/main.js --username YourName'));
             process.exit(1);
         }
     }
 
     /**
-     * Mostra ajuda
+     * Shows usage help
      */
     showHelp() {
-        console.log(chalk.cyan('Sistema de Mensagens Seguras - Cliente CLI'));
+        console.log(chalk.cyan('E2E Encryption Study - CLI client'));
         console.log('');
-        console.log(chalk.yellow('Uso:'));
-        console.log('  node main.js --username <nome> [opções]');
+        console.log(chalk.yellow('Usage:'));
+        console.log('  node client/cli/main.js --username <name> [options]');
         console.log('');
-        console.log(chalk.yellow('Opções:'));
-        console.log('  -u, --username <nome>  Nome do usuário (obrigatório)');
-        console.log('  -s, --server <url>     URL do servidor (padrão: NODE_URL ou http://localhost:6666)');
-        console.log('  -d, --debug            Ativar logs detalhados de criptografia');
-        console.log('  -h, --help             Mostrar esta ajuda');
+        console.log(chalk.yellow('Options:'));
+        console.log('  -u, --username <name>  User name (required)');
+        console.log('  -s, --server <url>     Server URL (default: NODE_URL or http://localhost:6666)');
+        console.log('  -d, --debug            Show detailed cryptography logs');
+        console.log('  -h, --help             Show this help');
         console.log('');
-        console.log(chalk.yellow('Exemplos:'));
-        console.log('  node main.js --username Alice');
-        console.log('  node main.js --username Bob --debug');
-        console.log('  node main.js --username Charlie --server http://192.168.1.100:6666');
+        console.log(chalk.yellow('Examples:'));
+        console.log('  node client/cli/main.js --username Alice');
+        console.log('  node client/cli/main.js --username Bob --debug');
+        console.log('  node client/cli/main.js --username Charlie --server http://192.168.1.100:6666');
     }
 
     /**
-     * Inicia o cliente
+     * Starts the client
      */
     async start() {
         try {
@@ -117,56 +117,51 @@ class SecureMessageClient {
             this.showMainMenu();
             this.setPrompt();
         } catch (error) {
-            console.error(chalk.red('❌ Erro ao iniciar cliente:'), error.message);
+            console.error(chalk.red('❌ Error starting client:'), error.message);
             process.exit(1);
         }
     }
 
     /**
-     * Mostra tela de boas-vindas
+     * Welcome screen
      */
     showWelcome() {
         console.clear();
-        console.log(chalk.green('Sistema de Mensagens Seguras - ECDH + Ed25519 + AES-GCM'));
-        console.log(chalk.blue('Usuário:'), chalk.white(this.username));
-        console.log(chalk.blue('Servidor:'), chalk.white(this.serverUrl));
-        console.log(chalk.blue('Debug:'), this.debugMode ? chalk.green('Ativado') : chalk.gray('Desativado'));
+        console.log(chalk.green('E2E Encryption Study - ECDH + Ed25519 + AES-GCM'));
+        console.log(chalk.blue('User:'), chalk.white(this.username));
+        console.log(chalk.blue('Server:'), chalk.white(this.serverUrl));
+        console.log(chalk.blue('Debug:'), this.debugMode ? chalk.green('On') : chalk.gray('Off'));
         console.log('');
     }
 
     /**
-     * Conecta ao servidor
+     * Connects to the server
      */
     async connect() {
         try {
-            console.log(chalk.yellow('🔌 Conectando ao servidor...'));
-            
+            console.log(chalk.yellow('🔌 Connecting to server...'));
+
             this.wsClient = new WebSocketClient(this.serverUrl, this.username, this.debugMode);
             this.messageHandler = new MessageHandler(this);
             this.commandHandler = new CommandHandler(this);
-            
-            // Configurar event handlers
+
             this.setupEventHandlers();
-            
-            // Conectar
+
             await this.wsClient.connect();
             this.isConnected = true;
-            
-            console.log(chalk.green('✅ Conectado com sucesso!'));
-            
+
         } catch (error) {
-            console.error(chalk.red('❌ Erro ao conectar:'), error.message);
+            console.error(chalk.red('❌ Error connecting:'), error.message);
             throw error;
         }
     }
 
     /**
-     * Configura event handlers do WebSocket
+     * Wires WebSocket client events to the UI
      */
     setupEventHandlers() {
         this.wsClient.on('user_connected', (data) => {
             console.log(chalk.green('✅'), data.message);
-            this.setPrompt();
         });
 
         this.wsClient.on('chat_started', (data) => {
@@ -176,10 +171,9 @@ class SecureMessageClient {
         });
 
         this.wsClient.on('exchange_public_key', (data) => {
-            // ✅ handleExchangePublicKey no websocket-client.js já processa automaticamente
-            // Apenas log informativo
+            // Key processing is done in WebSocketClient.handleExchangePublicKey
             if (this.debugMode) {
-                console.log(chalk.yellow(''), `Recebendo chave pública de ${data.targetUser}...`);
+                console.log(chalk.yellow('🔑'), `Received public key from ${data.targetUser}`);
             }
         });
 
@@ -188,7 +182,7 @@ class SecureMessageClient {
         });
 
         this.wsClient.on('chat_ready', (data) => {
-            console.log(chalk.green(''), data.message);
+            console.log(chalk.green('🔒'), data.message);
             this.setPrompt();
         });
 
@@ -217,9 +211,9 @@ class SecureMessageClient {
         this.wsClient.on('member_left_group', (data) => {
             console.log(chalk.yellow('👋'), data.message);
             if (data.wasCreator) {
-                console.log(chalk.yellow('   ⚠️  O criador do grupo saiu. Novo criador será designado.'));
+                console.log(chalk.yellow('   ⚠️  The group creator left. A new creator will be assigned.'));
             }
-            console.log(chalk.blue('   🔄 Recriando chaves do grupo...'));
+            console.log(chalk.blue('   🔄 Re-keying the group...'));
             this.setPrompt();
         });
 
@@ -232,24 +226,22 @@ class SecureMessageClient {
         });
 
         this.wsClient.on('error', (data) => {
-            console.log(chalk.red(''), data.message);
+            console.log(chalk.red('❌'), data.message);
             if (data.details) {
-                console.log(chalk.gray('   Detalhes:'), data.details);
+                console.log(chalk.gray('   Details:'), data.details);
             }
             if (data.type) {
-                console.log(chalk.gray('   Tipo:'), data.type);
+                console.log(chalk.gray('   Type:'), data.type);
             }
-            if (data.sharedKeyExists !== undefined) {
-                console.log(chalk.gray('   Chave compartilhada existe:'), data.sharedKeyExists ? 'Sim' : 'Não');
-            }
+            if (this.rl) this.setPrompt();
         });
 
         this.wsClient.on('user_joined', (data) => {
-            console.log(chalk.green(''), data.message);
+            console.log(chalk.green('➕'), data.message);
         });
 
         this.wsClient.on('user_left', (data) => {
-            console.log(chalk.gray(''), data.message);
+            console.log(chalk.gray('➖'), data.message);
         });
 
         this.wsClient.on('group_message_received', (data) => {
@@ -258,7 +250,7 @@ class SecureMessageClient {
     }
 
     /**
-     * Manipula entrada do usuário
+     * Handles user input
      */
     handleInput(input) {
         if (!input) {
@@ -266,22 +258,19 @@ class SecureMessageClient {
             return;
         }
 
-        // Verificar se é comando
         if (input.startsWith('/')) {
             this.commandHandler.handleCommand(input);
         } else {
-            // Enviar mensagem
             this.sendMessage(input);
         }
     }
 
     /**
-     * Envia mensagem
-     * ✅ Mensagem será criptografada no WebSocketClient antes de enviar (end-to-end)
+     * Sends a message (encrypted in WebSocketClient before leaving the client)
      */
     async sendMessage(message) {
         if (!this.currentChat) {
-            console.log(chalk.red('❌ Você não está em nenhum chat. Use /chat <usuário> ou /group <nome>'));
+            console.log(chalk.red('❌ You are not in a chat. Use /chat <user> or /group <name>'));
             this.setPrompt();
             return;
         }
@@ -293,67 +282,49 @@ class SecureMessageClient {
                 isGroup: this.currentChat.type === 'group'
             });
         } catch (error) {
-            console.log(chalk.red('❌ Erro ao enviar mensagem:'), error.message);
+            console.log(chalk.red('❌ Error sending message:'), error.message);
             this.setPrompt();
         }
     }
 
     /**
-     * Define prompt baseado no estado atual
+     * Sets the prompt based on the current state
      */
     setPrompt() {
-        let prompt = '';
-        
+        let prompt;
+
         if (this.currentChat) {
             if (this.currentChat.type === 'private') {
                 prompt = chalk.cyan(`[${this.username} → ${this.currentChat.target}] `);
             } else {
-                prompt = chalk.blue(`[Grupo: ${this.currentChat.target}] `);
+                prompt = chalk.blue(`[Group: ${this.currentChat.target}] `);
             }
         } else {
             prompt = chalk.green(`${this.username}> `);
         }
-        
+
         this.rl.setPrompt(prompt);
         this.rl.prompt();
     }
 
     /**
-     * Mostra menu principal
+     * Main menu
      */
     showMainMenu() {
-        console.log(chalk.cyan('┌─────────────────────────────────────────┐'));
-        console.log(chalk.cyan('│ Comandos disponíveis:                   │'));
-        console.log(chalk.cyan('│                                         │'));
-        console.log(chalk.cyan('│ /help          - Mostra esta ajuda      │'));
-        console.log(chalk.cyan('│ /users         - Lista usuários online  │'));
-        console.log(chalk.cyan('│ /chat <user>   - Inicia chat 1:1        │'));
-        console.log(chalk.cyan('│ /group <nome>  - Cria/entra em grupo    │'));
-        console.log(chalk.cyan('│ /groups        - Lista grupos           │'));
-        console.log(chalk.cyan('│ /leave         - Sai do chat atual      │'));
-        console.log(chalk.cyan('│ /status        - Status da conexão      │'));
-        console.log(chalk.cyan('│ /keys          - Mostra suas chaves     │'));
-        console.log(chalk.cyan('│ /debug         - Toggle modo debug      │'));
-        console.log(chalk.cyan('│ /newprofile    - Simula reinstalação    │'));
-        console.log(chalk.cyan('│ /delete @user  - Remove TOFU de usuário │'));
-        console.log(chalk.cyan('│ /quit          - Sair do sistema        │'));
-        console.log(chalk.cyan('└─────────────────────────────────────────┘'));
-        console.log('');
+        this.commandHandler.printCommands();
     }
 
     /**
-     * Desconecta do servidor
+     * Disconnects from the server
      */
     disconnect() {
         if (this.wsClient) {
             this.wsClient.disconnect();
         }
-        console.log(chalk.yellow('👋 Desconectado do servidor.'));
+        console.log(chalk.yellow('👋 Disconnected from server.'));
         process.exit(0);
     }
 }
 
-// Inicializar cliente
 const client = new SecureMessageClient();
 client.start();
-

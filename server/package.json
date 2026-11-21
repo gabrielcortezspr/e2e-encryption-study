@@ -1,7 +1,7 @@
 {
-  "name": "secure-message-server",
+  "name": "e2e-encryption-study-server",
   "version": "1.0.0",
-  "description": "Servidor relay (Socket.IO) do chat com criptografia ponta a ponta",
+  "description": "Relay server (Socket.IO) for the end-to-end encrypted chat",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

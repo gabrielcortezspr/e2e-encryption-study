@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Teste das camadas de segurança do cliente: Ed25519 + TOFU + ECDH + HKDF + Envelope AEAD
- * Uso: node tests/test-integrity.js   (ou: npm test, na raiz)
+ * Tests for the client security layers: Ed25519 + TOFU + ECDH + HKDF + AEAD envelope
+ * Usage: node tests/test-integrity.js   (or: npm test, from the repo root)
  *
- * Usa um diretório temporário para as chaves, sem tocar em client/.keys.
+ * Uses a temporary directory for keys, so client/.keys is left untouched.
  */
 
 const assert = require('assert');
@@ -12,7 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const tmpKeys = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-chat-keys-'));
+const tmpKeys = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-study-keys-'));
 process.env.KEYS_DIR = tmpKeys;
 
 const tofu = require('../client/crypto/ed25519-tofu');
@@ -20,7 +20,7 @@ const ECDHManual = require('../client/crypto/ecdh-manual');
 const { hkdf, deriveSessionKeys } = require('../client/crypto/hkdf');
 const { encryptMessage, decryptMessage } = require('../client/crypto/envelope');
 
-// Silenciar logs dos módulos (os erros esperados são logados por eles)
+// Silence module logs (they log the expected errors)
 const realLog = console.log;
 const realError = console.error;
 const quiet = (fn) => {
@@ -41,9 +41,9 @@ function test(name, fn) {
     }
 }
 
-realLog('🧪 Teste de Integridade - Ed25519 + TOFU + ECDH + HKDF + Envelope AEAD\n');
+realLog('🧪 Integrity tests - Ed25519 + TOFU + ECDH + HKDF + AEAD envelope\n');
 
-// --- Identidades Ed25519 e ECDH efêmero de Alice e Bob ---------------------
+// --- Ed25519 identities and ephemeral ECDH for Alice and Bob --------------
 const alice = { ecdh: new ECDHManual() };
 const bob = { ecdh: new ECDHManual() };
 alice.ecdh.generateKeyPair();
@@ -56,44 +56,44 @@ const signAs = (user, ecdh) => {
 const aliceSigned = signAs('Alice', alice.ecdh);
 const bobSigned = signAs('Bob', bob.ecdh);
 
-test('Alice e Bob têm identidades Ed25519 diferentes', () => {
+test('Alice and Bob have different Ed25519 identities', () => {
     assert.notStrictEqual(aliceSigned.ed25519Pub, bobSigned.ed25519Pub);
 });
 
-test('Arquivo de chave privada é criado com permissão 600', () => {
+test('Private key file is created with mode 600', () => {
     const mode = fs.statSync(tofu.getKeypairFile('Alice')).mode & 0o777;
     if (process.platform !== 'win32') assert.strictEqual(mode, 0o600);
 });
 
 // --- TOFU ------------------------------------------------------------------
-test('Alice verifica a assinatura de Bob e pina o fingerprint (1º contato)', () => {
+test("Alice verifies Bob's signature and pins his fingerprint (first contact)", () => {
     tofu.setUsername('Alice');
     quiet(() => tofu.verifyAndPinPeer('Bob', bobSigned.ed25519Pub, bobSigned.ecdhPub, bobSigned.signature));
     const pins = JSON.parse(fs.readFileSync(tofu.getTofuStore('Alice'), 'utf8'));
     assert.ok(pins.Bob && pins.Bob.fingerprint);
 });
 
-test('Reconexão com a mesma identidade é aceita', () => {
+test('Reconnecting with the same identity is accepted', () => {
     tofu.setUsername('Alice');
     quiet(() => tofu.verifyAndPinPeer('Bob', bobSigned.ed25519Pub, bobSigned.ecdhPub, bobSigned.signature));
 });
 
-test('Chave ECDH substituída (MITM) é rejeitada pela assinatura', () => {
+test('A swapped ECDH key (MITM) is rejected by the signature check', () => {
     const mallory = new ECDHManual();
     mallory.generateKeyPair();
     tofu.setUsername('Alice');
     assert.throws(
         () => quiet(() => tofu.verifyAndPinPeer('Bob', bobSigned.ed25519Pub, mallory.publicKey.toString('hex'), bobSigned.signature)),
-        /Assinatura inválida/
+        /Invalid signature/
     );
 });
 
-test('Identidade Ed25519 diferente para "Bob" dispara alerta TOFU', () => {
-    const fakeBob = signAs('Mallory', bob.ecdh); // assinatura válida, mas outra identidade
+test('A different Ed25519 identity for "Bob" triggers the TOFU alert', () => {
+    const fakeBob = signAs('Mallory', bob.ecdh); // valid signature, but a different identity
     tofu.setUsername('Alice');
     assert.throws(
         () => quiet(() => tofu.verifyAndPinPeer('Bob', fakeBob.ed25519Pub, fakeBob.ecdhPub, fakeBob.signature)),
-        /TOFU: Identidade de Bob mudou/
+        /TOFU: identity of Bob changed/
     );
 });
 
@@ -104,20 +104,20 @@ const context = ['Alice', 'Bob'].sort().join(':');
 const keyA = deriveSessionKeys(sharedA, context).encKey;
 const keyB = deriveSessionKeys(sharedB, context).encKey;
 
-test('ECDH: os dois lados calculam o mesmo segredo', () => {
+test('ECDH: both sides compute the same secret', () => {
     assert.ok(sharedA.equals(sharedB));
 });
 
-test('HKDF: os dois lados derivam a mesma chave de 16 bytes', () => {
+test('HKDF: both sides derive the same 16-byte key', () => {
     assert.strictEqual(keyA.length, 16);
     assert.ok(keyA.equals(keyB));
 });
 
-test('HKDF: contexto diferente gera chave diferente', () => {
+test('HKDF: a different context yields a different key', () => {
     assert.ok(!deriveSessionKeys(sharedA, 'Alice:Carol').encKey.equals(keyA));
 });
 
-test('HKDF: vetor de teste 1 da RFC 5869', () => {
+test('HKDF: RFC 5869 test vector 1', () => {
     const ikm = Buffer.alloc(22, 0x0b);
     const salt = Buffer.from('000102030405060708090a0b0c', 'hex');
     const info = Buffer.from('f0f1f2f3f4f5f6f7f8f9', 'hex');
@@ -126,50 +126,50 @@ test('HKDF: vetor de teste 1 da RFC 5869', () => {
 });
 
 // --- Envelope AEAD ---------------------------------------------------------
-const plaintext = 'Teste de integridade: mensagem protegida por AES-128-GCM!';
+const plaintext = 'Integrity test: message protected by AES-128-GCM!';
 const envelope = encryptMessage(plaintext, keyA, 'Alice', 'Bob', false);
 
-test('Adulterar o ciphertext é detectado (tag GCM)', () => {
+test('Tampering with the ciphertext is detected (GCM tag)', () => {
     const flipped = (parseInt(envelope.ct[0], 16) ^ 1).toString(16) + envelope.ct.slice(1);
     assert.throws(() => quiet(() => decryptMessage({ ...envelope, ct: flipped }, keyB, 'Alice')),
         /authenticate/);
 });
 
-test('Adulterar metadados (AAD) é detectado (tag GCM)', () => {
+test('Tampering with metadata (AAD) is detected (GCM tag)', () => {
     assert.throws(() => quiet(() => decryptMessage({ ...envelope, to: 'Carol' }, keyB, 'Alice')),
         /authenticate/);
 });
 
-test('Envelope forjado não "queima" o nonce da mensagem legítima', () => {
-    // As duas falhas acima reutilizaram o nonce; a mensagem real ainda deve abrir
+test('A forged envelope does not "burn" the nonce of the real message', () => {
+    // Both failures above reused the nonce; the real message must still open
     const decrypted = decryptMessage(envelope, keyB, 'Alice');
     assert.strictEqual(decrypted, plaintext);
 });
 
-test('Replay do mesmo envelope é rejeitado', () => {
-    assert.throws(() => quiet(() => decryptMessage(envelope, keyB, 'Alice')), /Nonce repetido/);
+test('Replaying the same envelope is rejected', () => {
+    assert.throws(() => quiet(() => decryptMessage(envelope, keyB, 'Alice')), /Repeated nonce/);
 });
 
-test('Remetente inesperado é rejeitado', () => {
+test('An unexpected sender is rejected', () => {
     const env = encryptMessage('oi', keyA, 'Alice', 'Bob');
-    assert.throws(() => quiet(() => decryptMessage(env, keyB, 'Carol')), /Sender inesperado/);
+    assert.throws(() => quiet(() => decryptMessage(env, keyB, 'Carol')), /Unexpected sender/);
 });
 
-test('Timestamp fora da janela de 5 minutos é rejeitado', () => {
+test('A timestamp outside the 5-minute window is rejected', () => {
     const env = encryptMessage('oi', keyA, 'Alice', 'Bob');
     const old = { ...env, ts: Date.now() - 10 * 60 * 1000 };
-    assert.throws(() => quiet(() => decryptMessage(old, keyB, 'Alice')), /janela/);
+    assert.throws(() => quiet(() => decryptMessage(old, keyB, 'Alice')), /acceptance window/);
 });
 
-test('Chave errada não descriptografa', () => {
+test('The wrong key does not decrypt', () => {
     const env = encryptMessage('oi', keyA, 'Alice', 'Bob');
-    assert.throws(() => quiet(() => decryptMessage(env, crypto.randomBytes(16), 'Alice')));
+    assert.throws(() => quiet(() => decryptMessage(env, crypto.randomBytes(16), 'Alice')), /authenticate/);
 });
 
 fs.rmSync(tmpKeys, { recursive: true, force: true });
 
 if (process.exitCode) {
-    realError('\n❌ Há testes falhando');
+    realError('\n❌ Some tests failed');
 } else {
-    realLog(`\n✅ ${passed} testes passaram`);
+    realLog(`\n✅ ${passed} tests passed`);
 }

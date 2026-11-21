@@ -1,66 +1,63 @@
 #!/bin/bash
+#
+# Starts the server and three clients (Alice, Bob, Charlie) in separate terminals.
+# Supports gnome-terminal, xterm, tmux or screen.
+#
+# Usage: ./start-test.sh [--debug]
 
-# Script de automação para iniciar servidor e clientes em terminais separados
-# Sistema de Mensagens Seguras - JavaScript Nativo
+cd "$(dirname "$0")" || exit 1
+ROOT="$(pwd)"
+SESSION_PREFIX="e2e-study"
 
-# Verificar se flag --debug foi passada
 DEBUG_FLAG=""
 if [ "$1" = "--debug" ]; then
     DEBUG_FLAG="--debug"
-    echo "🔍 Modo DEBUG ativado - logs detalhados de criptografia"
+    echo "🔍 DEBUG mode on - detailed cryptography logs"
 fi
 
-echo "🔐 Sistema de Mensagens Seguras - Iniciando Teste Completo"
-echo "=========================================================="
-echo "   Iniciando: Servidor + 3 Clientes (Alice, Bob, Charlie)"
-if [ -n "$DEBUG_FLAG" ]; then
-    echo "   Modo: DEBUG (mostrando Ed25519, TOFU, HKDF, Envelope)"
-fi
+echo "🔐 E2E Encryption Study - starting server + 3 clients (Alice, Bob, Charlie)"
+echo "========================================================================="
 echo ""
 
-# Verificar se o arquivo de configuração existe
 if [ ! -f "config.env" ]; then
-    echo "❌ Arquivo config.env não encontrado!"
-    echo "💡 Crie o arquivo config.env baseado no exemplo fornecido"
+    echo "❌ config.env not found!"
     exit 1
 fi
 
-# Carregar variáveis de ambiente
-export $(cat config.env | grep -v '^#' | xargs)
+# Load environment variables
+set -a
+# shellcheck disable=SC1091
+source config.env
+set +a
+PORT="${NODE_PORT:-6666}"
 
-# Verificar se as dependências estão instaladas
+# Install dependencies if needed
 if [ ! -d "server/node_modules" ] || [ ! -d "client/node_modules" ]; then
-    echo "📦 Instalando dependências..."
-    cd server && npm install > /dev/null 2>&1
-    cd ../client && npm install > /dev/null 2>&1
-    cd ..
-    echo "✅ Dependências instaladas"
+    echo "📦 Installing dependencies..."
+    (cd server && npm install > /dev/null 2>&1)
+    (cd client && npm install > /dev/null 2>&1)
+    echo "✅ Dependencies installed"
     echo ""
 fi
 
-# Verificar se o servidor já está rodando
-if lsof -i :${NODE_PORT:-6666} > /dev/null 2>&1; then
-    echo "⚠️  Servidor já está rodando na porta ${NODE_PORT:-6666}"
-    echo "💡 Parando servidor existente..."
-    pkill -f "node.*server.js" 2>/dev/null
+# Stop a server that is already running on the port
+if lsof -i :"$PORT" > /dev/null 2>&1; then
+    echo "⚠️  Something is already listening on port $PORT, stopping the existing server..."
+    pkill -f "node.*server/server.js" 2>/dev/null
     sleep 2
 fi
 
-# Função para limpar processos ao sair
 cleanup() {
     echo ""
-    echo "🛑 Parando todos os processos..."
-    pkill -f "node.*server.js" 2>/dev/null
-    pkill -f "node.*main.js.*--username" 2>/dev/null
-    echo "✅ Todos os processos foram parados"
+    echo "🛑 Stopping all processes..."
+    pkill -f "node.*server/server.js" 2>/dev/null
+    pkill -f "node.*client/cli/main.js.*--username" 2>/dev/null
+    echo "✅ All processes stopped"
     exit 0
 }
-
-# Capturar Ctrl+C
 trap cleanup SIGINT SIGTERM
 
-# Detectar qual gerenciador de terminais está disponível
-TERMINAL_CMD=""
+# Detect the available terminal
 if command -v gnome-terminal > /dev/null 2>&1; then
     TERMINAL_CMD="gnome-terminal"
 elif command -v xterm > /dev/null 2>&1; then
@@ -70,153 +67,68 @@ elif command -v tmux > /dev/null 2>&1; then
 elif command -v screen > /dev/null 2>&1; then
     TERMINAL_CMD="screen"
 else
-    echo "❌ Nenhum gerenciador de terminal encontrado!"
-    echo "💡 Instale: gnome-terminal, xterm, tmux ou screen"
+    echo "❌ No terminal multiplexer/emulator found!"
+    echo "💡 Install one of: gnome-terminal, xterm, tmux or screen"
     exit 1
 fi
 
-echo "📋 Configurações:"
-echo "   - Servidor: $NODE_URL (porta ${NODE_PORT:-6666})"
+echo "📋 Settings:"
+echo "   - Server: ${NODE_URL:-http://localhost:$PORT} (port $PORT)"
 echo "   - Terminal: $TERMINAL_CMD"
 echo ""
 
-# Iniciar servidor
-echo "🖥️  Iniciando servidor..."
-if [ "$TERMINAL_CMD" = "gnome-terminal" ]; then
-    gnome-terminal --title="Servidor - Porta ${NODE_PORT:-6666}" -- bash -c "cd $(pwd) && export $(cat config.env | grep -v '^#' | xargs) && cd server && node server.js; exec bash" 2>/dev/null &
-    SERVER_PID=$!
-elif [ "$TERMINAL_CMD" = "xterm" ]; then
-    xterm -title "Servidor - Porta ${NODE_PORT:-6666}" -e "cd $(pwd) && export $(cat config.env | grep -v '^#' | xargs) && cd server && node server.js" 2>/dev/null &
-    SERVER_PID=$!
-elif [ "$TERMINAL_CMD" = "tmux" ]; then
-    tmux new-session -d -s message-idea-server "cd $(pwd) && export $(cat config.env | grep -v '^#' | xargs) && cd server && node server.js"
-    SERVER_PID=$!
-    echo "   ℹ️  Servidor iniciado em sessão tmux: message-idea-server"
-    echo "   💡 Para ver: tmux attach -t message-idea-server"
-elif [ "$TERMINAL_CMD" = "screen" ]; then
-    screen -dmS message-idea-server bash -c "cd $(pwd) && export $(cat config.env | grep -v '^#' | xargs) && cd server && node server.js"
-    SERVER_PID=$!
-    echo "   ℹ️  Servidor iniciado em sessão screen: message-idea-server"
-    echo "   💡 Para ver: screen -r message-idea-server"
-fi
+# launch <title> <session-suffix> <command>
+launch() {
+    local title="$1" name="$SESSION_PREFIX-$2" cmd="cd \"$ROOT\" && $3"
+    case "$TERMINAL_CMD" in
+        gnome-terminal) gnome-terminal --title="$title" -- bash -c "$cmd; exec bash" 2>/dev/null & ;;
+        xterm)          xterm -title "$title" -e bash -c "$cmd" 2>/dev/null & ;;
+        tmux)           tmux new-session -d -s "$name" "$cmd"
+                        echo "   ℹ️  tmux session: $name (tmux attach -t $name)" ;;
+        screen)         screen -dmS "$name" bash -c "$cmd"
+                        echo "   ℹ️  screen session: $name (screen -r $name)" ;;
+    esac
+}
 
-echo "⏳ Aguardando servidor inicializar..."
+echo "🖥️  Starting server..."
+launch "Server - port $PORT" "server" "node server/server.js"
+
+echo "⏳ Waiting for the server..."
 sleep 3
 
-# Verificar se o servidor está rodando
-if ! lsof -i :${NODE_PORT:-6666} > /dev/null 2>&1; then
-    echo "❌ Erro: Servidor não iniciou corretamente"
+if ! lsof -i :"$PORT" > /dev/null 2>&1; then
+    echo "❌ Error: the server did not start"
     exit 1
 fi
-
-echo "✅ Servidor iniciado com sucesso!"
+echo "✅ Server started!"
 echo ""
 
-# Iniciar cliente Alice
-echo "👤 Iniciando cliente Alice..."
-if [ "$TERMINAL_CMD" = "gnome-terminal" ]; then
-    gnome-terminal --title="Alice - Cliente" -- bash -c "cd $(pwd) && node client/cli/main.js --username Alice $DEBUG_FLAG; exec bash" 2>/dev/null &
-elif [ "$TERMINAL_CMD" = "xterm" ]; then
-    xterm -title "Alice - Cliente" -e "cd $(pwd) && node client/cli/main.js --username Alice $DEBUG_FLAG" 2>/dev/null &
-elif [ "$TERMINAL_CMD" = "tmux" ]; then
-    tmux new-session -d -s message-idea-alice "cd $(pwd) && node client/cli/main.js --username Alice $DEBUG_FLAG"
-    echo "   ℹ️  Cliente Alice iniciado em sessão tmux: message-idea-alice"
-    echo "   💡 Para ver: tmux attach -t message-idea-alice"
-elif [ "$TERMINAL_CMD" = "screen" ]; then
-    screen -dmS message-idea-alice bash -c "cd $(pwd) && node client/cli/main.js --username Alice $DEBUG_FLAG"
-    echo "   ℹ️  Cliente Alice iniciado em sessão screen: message-idea-alice"
-    echo "   💡 Para ver: screen -r message-idea-alice"
-fi
-
-sleep 1
-
-# Iniciar cliente Bob
-echo "👤 Iniciando cliente Bob..."
-if [ "$TERMINAL_CMD" = "gnome-terminal" ]; then
-    gnome-terminal --title="Bob - Cliente" -- bash -c "cd $(pwd) && node client/cli/main.js --username Bob $DEBUG_FLAG; exec bash" 2>/dev/null &
-elif [ "$TERMINAL_CMD" = "xterm" ]; then
-    xterm -title "Bob - Cliente" -e "cd $(pwd) && node client/cli/main.js --username Bob $DEBUG_FLAG" 2>/dev/null &
-elif [ "$TERMINAL_CMD" = "tmux" ]; then
-    tmux new-session -d -s message-idea-bob "cd $(pwd) && node client/cli/main.js --username Bob $DEBUG_FLAG"
-    echo "   ℹ️  Cliente Bob iniciado em sessão tmux: message-idea-bob"
-    echo "   💡 Para ver: tmux attach -t message-idea-bob"
-elif [ "$TERMINAL_CMD" = "screen" ]; then
-    screen -dmS message-idea-bob bash -c "cd $(pwd) && node client/cli/main.js --username Bob $DEBUG_FLAG"
-    echo "   ℹ️  Cliente Bob iniciado em sessão screen: message-idea-bob"
-    echo "   💡 Para ver: screen -r message-idea-bob"
-fi
-
-sleep 1
-
-# Iniciar cliente Charlie
-echo "👤 Iniciando cliente Charlie..."
-if [ "$TERMINAL_CMD" = "gnome-terminal" ]; then
-    gnome-terminal --title="Charlie - Cliente" -- bash -c "cd $(pwd) && node client/cli/main.js --username Charlie $DEBUG_FLAG; exec bash" 2>/dev/null &
-elif [ "$TERMINAL_CMD" = "xterm" ]; then
-    xterm -title "Charlie - Cliente" -e "cd $(pwd) && node client/cli/main.js --username Charlie $DEBUG_FLAG" 2>/dev/null &
-elif [ "$TERMINAL_CMD" = "tmux" ]; then
-    tmux new-session -d -s message-idea-charlie "cd $(pwd) && node client/cli/main.js --username Charlie $DEBUG_FLAG"
-    echo "   ℹ️  Cliente Charlie iniciado em sessão tmux: message-idea-charlie"
-    echo "   💡 Para ver: tmux attach -t message-idea-charlie"
-elif [ "$TERMINAL_CMD" = "screen" ]; then
-    screen -dmS message-idea-charlie bash -c "cd $(pwd) && node client/cli/main.js --username Charlie $DEBUG_FLAG"
-    echo "   ℹ️  Cliente Charlie iniciado em sessão screen: message-idea-charlie"
-    echo "   💡 Para ver: screen -r message-idea-charlie"
-fi
+for user in Alice Bob Charlie; do
+    echo "👤 Starting client $user..."
+    launch "$user - client" "$(echo "$user" | tr '[:upper:]' '[:lower:]')" \
+        "node client/cli/main.js --username $user $DEBUG_FLAG"
+    sleep 1
+done
 
 echo ""
-echo "✅ Todos os componentes iniciados!"
+echo "✅ Everything started!"
 echo ""
-echo "📋 Resumo:"
-echo "   - Servidor: Porta ${NODE_PORT:-6666}"
-if [ "$TERMINAL_CMD" = "gnome-terminal" ] || [ "$TERMINAL_CMD" = "xterm" ]; then
-    echo "   - Cliente Alice: Janela de terminal separada"
-    echo "   - Cliente Bob: Janela de terminal separada"
-    echo "   - Cliente Charlie: Janela de terminal separada"
-else
-    echo "   - Cliente Alice: Sessão $TERMINAL_CMD (message-idea-alice)"
-    echo "   - Cliente Bob: Sessão $TERMINAL_CMD (message-idea-bob)"
-    echo "   - Cliente Charlie: Sessão $TERMINAL_CMD (message-idea-charlie)"
-fi
-echo ""
-echo "🚀 Comandos úteis:"
-echo "   - Listar usuários: /users"
-echo "   - Iniciar chat: /chat Bob (no terminal da Alice)"
-echo "   - Criar grupo: /group Equipe"
-echo "   - Sair do grupo: /leave (testa recriação do secret share)"
-echo "   - Ver chaves: /keys (mostra ECDH, Ed25519, TOFU pins)"
+echo "🚀 Try:"
+echo "   - List users:     /users"
+echo "   - Start a chat:   /chat Bob        (in Alice's terminal)"
+echo "   - Create a group: /group Team"
+echo "   - Leave a group:  /leave           (triggers a group re-key)"
+echo "   - Show keys:      /keys            (ECDH, Ed25519, TOFU pins)"
 if [ -n "$DEBUG_FLAG" ]; then
     echo ""
-    echo "🔍 Modo DEBUG ativo - você verá:"
-    echo "   🔑 Ed25519: Carregamento de keypair, assinaturas"
-    echo "   🔍 TOFU: Pinning inicial e verificações"
-    echo "   🔄 ECDH: Geração de chaves e shared secrets"
-    echo "   🔑 HKDF: Derivação de encKey e authKey"
-    echo "   📦 Envelope: Construção com nonce e tag GCM"
-    echo "   📨 Validação: Timestamp, nonce replay, GCM auth"
-fi
-echo ""
-if [ "$TERMINAL_CMD" = "tmux" ] || [ "$TERMINAL_CMD" = "screen" ]; then
-    echo "💡 Para ver os terminais:"
-    echo "   - Servidor: $TERMINAL_CMD attach -t message-idea-server"
-    echo "   - Alice: $TERMINAL_CMD attach -t message-idea-alice"
-    echo "   - Bob: $TERMINAL_CMD attach -t message-idea-bob"
-    echo "   - Charlie: $TERMINAL_CMD attach -t message-idea-charlie"
-    echo ""
-fi
-echo "🛑 Para parar tudo: Ctrl+C ou execute: pkill -f 'node.*(server|main)'"
-if [ -z "$DEBUG_FLAG" ]; then
-    echo "💡 Para testar com logs detalhados: ./start-test.sh --debug"
-fi
-echo ""
-
-# Aguardar indefinidamente (ou até Ctrl+C)
-if [ "$TERMINAL_CMD" = "gnome-terminal" ] || [ "$TERMINAL_CMD" = "xterm" ]; then
-    echo "💡 Os terminais foram abertos em janelas separadas."
-    echo "   Este script pode ser fechado - os processos continuarão rodando."
-    echo "   Para parar tudo, execute: pkill -f 'node.*(server|main)'"
-    wait
+    echo "🔍 DEBUG mode shows: Ed25519 signatures, TOFU pinning, ECDH secrets,"
+    echo "   HKDF derivation, envelope construction and validation"
 else
-    wait
+    echo ""
+    echo "💡 For detailed logs: ./start-test.sh --debug"
 fi
+echo ""
+echo "🛑 To stop everything: Ctrl+C or pkill -f 'node.*(server/server|client/cli/main).js'"
+echo ""
 
+wait

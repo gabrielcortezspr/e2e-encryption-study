@@ -1,7 +1,7 @@
 {
-  "name": "secure-message-client",
+  "name": "e2e-encryption-study-client",
   "version": "1.0.0",
-  "description": "Cliente CLI do chat com criptografia ponta a ponta (ECDH + Ed25519 + AES-GCM)",
+  "description": "CLI client for the end-to-end encrypted chat (ECDH + Ed25519 + AES-GCM)",
   "main": "cli/main.js",
   "scripts": {
     "start": "node cli/main.js",

@@ -1,5 +1,6 @@
 /**
- * Manipulador de mensagens do cliente
+ * Displays received and sent messages
+ * (messages arrive here already validated and decrypted by WebSocketClient)
  */
 
 const chalk = require('chalk');
@@ -9,86 +10,65 @@ class MessageHandler {
         this.client = client;
     }
 
+    printEnvelope(envelope) {
+        console.log(chalk.gray(`   [Debug] Envelope v${envelope.v}:`));
+        console.log(chalk.gray(`      Timestamp: ${new Date(envelope.ts).toISOString()}`));
+        console.log(chalk.gray(`      Nonce: ${envelope.nonce.substring(0, 16)}...`));
+        console.log(chalk.gray(`      Tag: ${envelope.tag.substring(0, 16)}...`));
+    }
+
     /**
-     * Manipula mensagem recebida
-     * Mensagem já foi validada e descriptografada no WebSocketClient (end-to-end)
+     * Received private message
      */
     async handleReceivedMessage(data) {
-        try {
-            const { from, message, envelope, timestamp } = data;
-            
-            // ✅ Mensagem já foi validada e descriptografada no cliente (end-to-end)
-            if (!message) {
-                console.log(chalk.red(`❌ Mensagem não recebida corretamente de ${from}`));
-                this.client.setPrompt();
-                return;
-            }
-            
-            // Mostrar mensagem descriptografada
-            const time = new Date(timestamp).toLocaleTimeString();
-            console.log(chalk.green(`[${time}] ${from}:`), chalk.white(message));
-            
-            // Se debug ativado, mostrar envelope
-            if (this.client.debugMode && envelope) {
-                console.log(chalk.gray(`   [Debug] Envelope v${envelope.v}:`));
-                console.log(chalk.gray(`      Timestamp: ${new Date(envelope.ts).toISOString()}`));
-                console.log(chalk.gray(`      Nonce: ${envelope.nonce.substring(0, 16)}...`));
-                console.log(chalk.gray(`      Tag: ${envelope.tag.substring(0, 16)}...`));
-            }
-            
+        const { from, message, envelope, timestamp } = data;
+
+        if (!message) {
+            console.log(chalk.red(`❌ Message from ${from} was not received correctly`));
             this.client.setPrompt();
-            
-        } catch (error) {
-            console.log(chalk.red(`❌ Erro ao processar mensagem de ${data.from}:`));
-            console.log(chalk.gray('   Detalhes:'), error.message);
-            this.client.setPrompt();
+            return;
         }
+
+        const time = new Date(timestamp).toLocaleTimeString();
+        console.log(chalk.green(`[${time}] ${from}:`), chalk.white(message));
+
+        if (this.client.debugMode && envelope) {
+            this.printEnvelope(envelope);
+        }
+
+        this.client.setPrompt();
     }
 
     /**
-     * Manipula mensagem de grupo recebida
-     * ✅ Mensagem já foi validada e descriptografada no WebSocketClient (end-to-end)
+     * Received group message
      */
     async handleGroupMessage(data) {
-        try {
-            const { from, groupName, message, envelope, timestamp } = data;
-            
-            // ✅ Mensagem já foi validada e descriptografada no cliente (end-to-end)
-            if (!message) {
-                console.log(chalk.red(`❌ Mensagem de grupo não recebida corretamente de ${from}`));
-                this.client.setPrompt();
-                return;
-            }
-            
-            // Mostrar mensagem no formato de grupo
-            const time = new Date(timestamp).toLocaleTimeString();
-            console.log(chalk.blue(`[${time}] [Grupo: ${groupName}] ${from}:`), chalk.white(message));
-            
-            // Se debug ativado, mostrar envelope
-            if (this.client.debugMode && envelope) {
-                console.log(chalk.gray(`   [Debug] Envelope v${envelope.v}:`));
-                console.log(chalk.gray(`      Timestamp: ${new Date(envelope.ts).toISOString()}`));
-                console.log(chalk.gray(`      Nonce: ${envelope.nonce.substring(0, 16)}...`));
-                console.log(chalk.gray(`      Tag: ${envelope.tag.substring(0, 16)}...`));
-            }
-            
+        const { from, groupName, message, envelope, timestamp } = data;
+
+        if (!message) {
+            console.log(chalk.red(`❌ Group message from ${from} was not received correctly`));
             this.client.setPrompt();
-            
-        } catch (error) {
-            console.log(chalk.red(`❌ Erro ao processar mensagem de grupo de ${data.from}:`));
-            console.log(chalk.gray('   Detalhes:'), error.message);
-            this.client.setPrompt();
+            return;
         }
+
+        const time = new Date(timestamp).toLocaleTimeString();
+        console.log(chalk.blue(`[${time}] [Group: ${groupName}] ${from}:`), chalk.white(message));
+
+        if (this.client.debugMode && envelope) {
+            this.printEnvelope(envelope);
+        }
+
+        this.client.setPrompt();
     }
 
     /**
-     * Manipula mensagem enviada
+     * Sent message (local confirmation)
      */
     handleSentMessage(data) {
         const { message, envelope, target, isGroup } = data;
-        
+
         if (this.client.debugMode && envelope) {
-            console.log(chalk.white(`🔍 Debug - Envelope enviado:`));
+            console.log(chalk.white('🔍 Debug - envelope sent:'));
             console.log(chalk.white(`   Original: ${message}`));
             console.log(chalk.white(`   Envelope v${envelope.v}:`));
             console.log(chalk.white(`      Timestamp: ${new Date(envelope.ts).toISOString()}`));
@@ -97,28 +77,20 @@ class MessageHandler {
             console.log(chalk.white(`      Nonce: ${envelope.nonce.substring(0, 16)}...`));
             console.log(chalk.white(`      CT: ${envelope.ct.substring(0, 32)}...`));
             console.log(chalk.white(`      Tag: ${envelope.tag.substring(0, 16)}...`));
-            
-            // Buscar e mostrar a chave usada
-            let key = null;
-            if (isGroup) {
-                key = this.client.wsClient.groupKeys.get(target);
-                if (key) {
-                    console.log(chalk.white(`   Chave de grupo (${target}): ${key.toString('hex')}`));
-                } else {
-                    console.log(chalk.yellow(`   ⚠️  Chave de grupo não encontrada para ${target}`));
-                }
+            console.log(chalk.white(`   Full envelope (for tools/decrypt-envelope.js):`));
+            console.log(chalk.gray(`   ${JSON.stringify(envelope)}`));
+
+            const key = isGroup
+                ? this.client.wsClient.groupKeys.get(target)
+                : this.client.wsClient.sharedKeys.get(target);
+            if (key) {
+                console.log(chalk.white(`   ${isGroup ? 'Group' : 'Session'} key (${target}): ${key.toString('hex')}`));
             } else {
-                key = this.client.wsClient.sharedKeys.get(target);
-                if (key) {
-                    console.log(chalk.white(`   Chave compartilhada (${target}): ${key.toString('hex')}`));
-                } else {
-                    console.log(chalk.yellow(`   ⚠️  Chave compartilhada não encontrada com ${target}`));
-                }
+                console.log(chalk.yellow(`   ⚠️  No key found for ${target}`));
             }
         }
-        
-        // A mensagem já foi enviada, apenas mostrar confirmação
-        console.log(chalk.green(`✅ Mensagem enviada para ${target}`));
+
+        console.log(chalk.green(`✅ Message sent to ${target}`));
         this.client.setPrompt();
     }
 }

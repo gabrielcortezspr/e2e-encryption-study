@@ -1,24 +1,25 @@
 #!/usr/bin/env node
 /**
- * Descriptografa manualmente um envelope v1 (AES-128-GCM)
+ * Manually decrypts a v1 envelope (AES-128-GCM)
  *
- * Uso:
- *   node tools/decrypt-envelope.js <chave_hex> '<envelope_json>'
- *   node tools/decrypt-envelope.js <chave_hex> envelope.json
+ * Usage:
+ *   node tools/decrypt-envelope.js <key_hex> '<envelope_json>'
+ *   node tools/decrypt-envelope.js <key_hex> envelope.json
  *
- * A chave (32 caracteres hex) aparece no cliente com /keys ou no modo --debug.
- * O envelope tem o formato { v, ts, from, to, isGroup, nonce, ct, tag }.
+ * The key (32 hex characters) is shown by the client with /keys or in --debug
+ * mode, which also prints the full envelope JSON for every message sent.
  *
- * Diferente do cliente, esta ferramenta NÃO aplica a janela de timestamp nem o
- * cache anti-replay: ela serve para estudar mensagens antigas. A tag GCM
- * continua sendo verificada.
+ * Unlike the client, this tool does NOT enforce the timestamp window or the
+ * replay cache: it is meant for studying old messages. The GCM tag is still
+ * verified.
  */
 
 const crypto = require('crypto');
 const fs = require('fs');
+const { buildAAD } = require('../client/crypto/envelope');
 
 function usage() {
-    console.log('Uso: node tools/decrypt-envelope.js <chave_hex> <envelope_json | arquivo.json>');
+    console.log("Usage: node tools/decrypt-envelope.js <key_hex> <envelope_json | file.json>");
     process.exit(1);
 }
 
@@ -27,7 +28,7 @@ if (!keyHex || !envelopeArg) usage();
 
 try {
     if (!/^[0-9a-fA-F]{32}$/.test(keyHex.trim())) {
-        throw new Error('A chave deve ter exatamente 32 caracteres hexadecimais (16 bytes)');
+        throw new Error('The key must be exactly 32 hexadecimal characters (16 bytes)');
     }
     const key = Buffer.from(keyHex.trim(), 'hex');
 
@@ -35,20 +36,12 @@ try {
     const env = JSON.parse(raw);
 
     for (const field of ['v', 'ts', 'from', 'to', 'nonce', 'ct', 'tag']) {
-        if (env[field] === undefined) throw new Error(`Envelope sem o campo "${field}"`);
+        if (env[field] === undefined) throw new Error(`Envelope is missing the "${field}" field`);
     }
 
-    // Mesma AAD usada em client/crypto/envelope.js
-    const aad = Buffer.concat([
-        Buffer.from([env.v]),
-        Buffer.from(env.ts.toString()),
-        Buffer.from(env.from),
-        Buffer.from(env.to),
-        Buffer.from(env.nonce, 'hex')
-    ]);
-
-    const decipher = crypto.createDecipheriv('aes-128-gcm', key, Buffer.from(env.nonce, 'hex'));
-    decipher.setAAD(aad);
+    const nonce = Buffer.from(env.nonce, 'hex');
+    const decipher = crypto.createDecipheriv('aes-128-gcm', key, nonce);
+    decipher.setAAD(buildAAD(env.v, env.ts, env.from, env.to, nonce));
     decipher.setAuthTag(Buffer.from(env.tag, 'hex'));
 
     const plaintext = Buffer.concat([
@@ -56,15 +49,15 @@ try {
         decipher.final()
     ]).toString('utf8');
 
-    console.log(`De:      ${env.from}`);
-    console.log(`Para:    ${env.to}${env.isGroup ? ' (grupo)' : ''}`);
-    console.log(`Enviado: ${new Date(env.ts).toISOString()}`);
-    console.log('✓ Tag GCM válida');
-    console.log(`Mensagem: "${plaintext}"`);
+    console.log(`From:    ${env.from}`);
+    console.log(`To:      ${env.to}${env.isGroup ? ' (group)' : ''}`);
+    console.log(`Sent at: ${new Date(env.ts).toISOString()}`);
+    console.log('✓ GCM tag is valid');
+    console.log(`Message: "${plaintext}"`);
 } catch (error) {
     const msg = /authenticate/.test(error.message)
-        ? 'Tag GCM inválida: chave errada ou envelope adulterado'
+        ? 'Invalid GCM tag: wrong key or tampered envelope'
         : error.message;
-    console.error('❌ Erro:', msg);
+    console.error('❌ Error:', msg);
     process.exit(1);
 }

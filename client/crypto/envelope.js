@@ -1,63 +1,68 @@
 /**
- * Envelope v1: criptografia autenticada (AEAD) com AES-128-GCM
+ * Envelope v1: authenticated encryption (AEAD) with AES-128-GCM
  *
  * Envelope: { v, ts, from, to, isGroup, nonce, ct, tag }
- * - Confidencialidade: AES-128-GCM com nonce aleatório de 96 bits
- * - Integridade/autenticidade: tag GCM cobre o ciphertext e, via AAD,
- *   os metadados (v, ts, from, to, nonce)
- * - Anti-replay: janela de timestamp (5 min) + cache de nonces já aceitos
+ * - Confidentiality: AES-128-GCM with a random 96-bit nonce
+ * - Integrity/authenticity: the GCM tag covers the ciphertext and, via AAD,
+ *   the metadata (v, ts, from, to, nonce)
+ * - Anti-replay: timestamp window (5 min) + cache of already accepted nonces
  */
 
 const crypto = require('crypto');
 
 const ENVELOPE_VERSION = 1;
-const TIMESTAMP_WINDOW_MS = 5 * 60 * 1000; // 5 minutos
-const nonceCache = new Map(); // Cache simples para detectar replay (limitado por sessão)
+const TIMESTAMP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const nonceCache = new Map(); // Simple in-memory replay cache (per process)
 
 /**
- * Cria envelope v1 criptografado com AES-128-GCM
- * @param {string} message - Mensagem plaintext
- * @param {Buffer} key - Chave de cifra (16 bytes)
- * @param {string} sender - Identificador do remetente
- * @param {string} recipient - Identificador do destinatário (ou groupId)
- * @param {boolean} isGroup - Se é mensagem de grupo
- * @param {boolean} debugMode - Se true, exibe logs detalhados
+ * Builds the AAD (Additional Authenticated Data): authenticated, not encrypted
+ */
+function buildAAD(v, ts, from, to, nonce) {
+    return Buffer.concat([
+        Buffer.from([v]),
+        Buffer.from(ts.toString()),
+        Buffer.from(from),
+        Buffer.from(to),
+        nonce
+    ]);
+}
+
+/**
+ * Creates an encrypted v1 envelope with AES-128-GCM
+ * @param {string} message - Plaintext message
+ * @param {Buffer} key - Encryption key (16 bytes)
+ * @param {string} sender - Sender identifier
+ * @param {string} recipient - Recipient identifier (or group name)
+ * @param {boolean} isGroup - Whether this is a group message
+ * @param {boolean} debugMode - If true, prints detailed logs
  * @returns {Object} - Envelope {v, ts, from, to, isGroup, nonce, ct, tag}
  */
 function encryptMessage(message, key, sender, recipient, isGroup = false, debugMode = false) {
     try {
         if (!Buffer.isBuffer(key) || key.length !== 16) {
-            throw new Error('Chave deve ser Buffer de 16 bytes (128 bits)');
+            throw new Error('Key must be a 16-byte Buffer (128 bits)');
         }
         if (!sender || !recipient) {
-            throw new Error('Sender e recipient são obrigatórios');
+            throw new Error('Sender and recipient are required');
         }
 
         const nonce = crypto.randomBytes(12); // 96 bits
         const timestamp = Date.now();
-        
-        // AAD (Additional Authenticated Data): metadados protegidos mas não cifrados
-        const aad = Buffer.concat([
-            Buffer.from([ENVELOPE_VERSION]),
-            Buffer.from(timestamp.toString()),
-            Buffer.from(sender),
-            Buffer.from(recipient),
-            nonce
-        ]);
+        const aad = buildAAD(ENVELOPE_VERSION, timestamp, sender, recipient, nonce);
 
         const cipher = crypto.createCipheriv('aes-128-gcm', key, nonce);
         cipher.setAAD(aad);
-        
+
         const encrypted = Buffer.concat([
             cipher.update(message, 'utf8'),
             cipher.final()
         ]);
-        
+
         const tag = cipher.getAuthTag();
 
         if (debugMode) {
-            console.log('│ ✓ Mensagem criptografada (AES-128-GCM)');
-            console.log(`│   Tag de autenticação: ${tag.toString('hex').substring(0, 16)}...`);
+            console.log('│ ✓ Message encrypted (AES-128-GCM)');
+            console.log(`│   Authentication tag: ${tag.toString('hex').substring(0, 16)}...`);
         }
 
         return {
@@ -71,103 +76,94 @@ function encryptMessage(message, key, sender, recipient, isGroup = false, debugM
             tag: tag.toString('hex')
         };
     } catch (error) {
-        console.error('❌ Erro ao criar envelope criptografado:', error.message);
+        console.error('❌ Error creating encrypted envelope:', error.message);
         throw error;
     }
 }
 
 /**
- * Valida e descriptografa envelope v1
- * @param {Object} envelope - Envelope recebido
- * @param {Buffer} key - Chave de cifra (16 bytes)
- * @param {string} expectedSender - Sender esperado (opcional, validação adicional)
- * @param {boolean} debugMode - Se true, exibe logs detalhados
- * @returns {string} - Mensagem plaintext
- * @throws {Error} - Se validação/integridade falhar
+ * Validates and decrypts a v1 envelope
+ * @param {Object} envelope - Received envelope
+ * @param {Buffer} key - Encryption key (16 bytes)
+ * @param {string} expectedSender - Expected sender (optional extra check)
+ * @param {boolean} debugMode - If true, prints detailed logs
+ * @returns {string} - Plaintext message
+ * @throws {Error} - If any validation or integrity check fails
  */
 function decryptMessage(envelope, key, expectedSender = null, debugMode = false) {
     try {
         if (!Buffer.isBuffer(key) || key.length !== 16) {
-            throw new Error('Chave deve ser Buffer de 16 bytes (128 bits)');
+            throw new Error('Key must be a 16-byte Buffer (128 bits)');
         }
-        
+
         if (debugMode) {
-            console.log('│ ► Validando envelope recebido...');
+            console.log('│ ► Validating received envelope...');
         }
-        
-        // Validar estrutura
+
+        // Structure
         const { v, ts, from, to, nonce, ct, tag } = envelope;
         if (!v || !ts || !from || !to || !nonce || !ct || !tag) {
-            throw new Error('Envelope incompleto ou inválido');
+            throw new Error('Incomplete or invalid envelope');
         }
-        
-        // Validar versão
+
+        // Version
         if (v !== ENVELOPE_VERSION) {
-            throw new Error(`Versão de envelope não suportada: ${v}`);
+            throw new Error(`Unsupported envelope version: ${v}`);
         }
-        
-        // Validar timestamp (janela de aceitação)
-        const now = Date.now();
-        const timeDiff = Math.abs(now - ts);
+
+        // Timestamp (acceptance window)
+        const timeDiff = Math.abs(Date.now() - ts);
         if (timeDiff > TIMESTAMP_WINDOW_MS) {
-            throw new Error('Timestamp fora da janela de aceitação (possível replay antigo)');
+            throw new Error('Timestamp outside the acceptance window (possible old replay)');
         }
-        
+
         if (debugMode) {
-            console.log(`│ ✓ Timestamp válido (${Math.floor(timeDiff / 1000)}s de diferença)`);
+            console.log(`│ ✓ Timestamp valid (${Math.floor(timeDiff / 1000)}s difference)`);
         }
-        
-        // Validar sender (se fornecido)
+
+        // Sender (if provided)
         if (expectedSender && from !== expectedSender) {
-            throw new Error(`Sender inesperado: esperado ${expectedSender}, recebido ${from}`);
+            throw new Error(`Unexpected sender: expected ${expectedSender}, got ${from}`);
         }
-        
-        // Detectar replay (nonce repetido dentro da sessão)
+
+        // Replay detection (nonce already seen in this process)
         const nonceKey = `${from}:${nonce}`;
         if (nonceCache.has(nonceKey)) {
-            throw new Error('Nonce repetido detectado (possível ataque de replay)');
+            throw new Error('Repeated nonce detected (possible replay attack)');
         }
-        
-        if (debugMode) {
-            console.log('│ ✓ Nonce único (proteção anti-replay)');
-        }
-        
-        // Recriar AAD
-        const aad = Buffer.concat([
-            Buffer.from([v]),
-            Buffer.from(ts.toString()),
-            Buffer.from(from),
-            Buffer.from(to),
-            Buffer.from(nonce, 'hex')
-        ]);
 
-        const decipher = crypto.createDecipheriv('aes-128-gcm', key, Buffer.from(nonce, 'hex'));
-        decipher.setAAD(aad);
+        if (debugMode) {
+            console.log('│ ✓ Nonce is unique (anti-replay)');
+        }
+
+        const nonceBuf = Buffer.from(nonce, 'hex');
+        const decipher = crypto.createDecipheriv('aes-128-gcm', key, nonceBuf);
+        decipher.setAAD(buildAAD(v, ts, from, to, nonceBuf));
         decipher.setAuthTag(Buffer.from(tag, 'hex'));
-        
+
         const decrypted = Buffer.concat([
             decipher.update(Buffer.from(ct, 'hex')),
             decipher.final()
         ]).toString('utf8');
-        
-        // Só registra o nonce depois que a tag foi verificada: assim um envelope
-        // forjado não consegue "queimar" o nonce de uma mensagem legítima.
+
+        // Only remember the nonce after the tag is verified, so a forged
+        // envelope cannot "burn" the nonce of a legitimate message.
         rememberNonce(nonceKey, ts);
-        
+
         if (debugMode) {
-            console.log('│ ✓ Tag de autenticação verificada');
-            console.log('│ ✓ Mensagem descriptografada (AES-128-GCM)');
+            console.log('│ ✓ Authentication tag verified');
+            console.log('│ ✓ Message decrypted (AES-128-GCM)');
         }
-        
+
         return decrypted;
     } catch (error) {
-        console.error('❌ Erro ao validar/descriptografar envelope:', error.message);
+        console.error('❌ Error validating/decrypting envelope:', error.message);
         throw error;
     }
 }
 
 /**
- * Registra nonce aceito, limitando o tamanho do cache
+ * Stores an accepted nonce, keeping the cache bounded
  */
 function rememberNonce(nonceKey, ts) {
     nonceCache.set(nonceKey, ts);
@@ -184,6 +180,6 @@ function rememberNonce(nonceKey, ts) {
 module.exports = {
     encryptMessage,
     decryptMessage,
+    buildAAD,
     ENVELOPE_VERSION
 };
-

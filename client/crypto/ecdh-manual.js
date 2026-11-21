@@ -1,10 +1,10 @@
 /**
- * ECDH (Elliptic Curve Diffie-Hellman) com logs educativos
- * Curva: secp256k1 (mesma do Bitcoin)
+ * ECDH (Elliptic Curve Diffie-Hellman) with educational logs
+ * Curve: secp256k1 (the same one Bitcoin uses)
  *
- * Wrapper sobre crypto.createECDH que expõe cada etapa (chave privada,
- * chave pública, segredo compartilhado). O segredo bruto NÃO é usado como
- * chave: ele passa pelo HKDF (ver hkdf.js) antes de virar chave AES.
+ * Thin wrapper around crypto.createECDH that exposes each step (private key,
+ * public key, shared secret). The raw shared secret is NOT used as a key:
+ * it goes through HKDF (see hkdf.js) before becoming an AES key.
  */
 
 const crypto = require('crypto');
@@ -18,28 +18,28 @@ class ECDHManual {
     }
 
     /**
-     * Gera par de chaves (privada + pública)
+     * Generates a key pair (private + public)
      */
     generateKeyPair() {
         if (this.debug) {
-            console.log('=== ECDH Manual - Geracao de Chaves ===');
+            console.log('=== ECDH - Key Generation ===');
         }
 
-        // Gerar chave privada aleatória (32 bytes)
+        // Random 32-byte private key
         this.privateKey = crypto.randomBytes(32);
-        
+
         if (this.debug) {
-            console.log('1. Chave privada gerada:', this.privateKey.toString('hex'));
+            console.log('1. Private key generated:', this.privateKey.toString('hex'));
         }
 
-        // Criar instância ECDH para calcular chave pública
+        // Derive the public key from the private key
         const ecdh = crypto.createECDH(this.curve);
         ecdh.setPrivateKey(this.privateKey);
         this.publicKey = ecdh.getPublicKey();
 
         if (this.debug) {
-            console.log('2. Chave publica calculada:', this.publicKey.toString('hex'));
-            console.log('3. Tamanho da chave publica:', this.publicKey.length, 'bytes');
+            console.log('2. Public key computed:', this.publicKey.toString('hex'));
+            console.log('3. Public key size:', this.publicKey.length, 'bytes');
         }
 
         return {
@@ -49,34 +49,33 @@ class ECDHManual {
     }
 
     /**
-     * Calcula chave compartilhada usando chave pública do outro participante
+     * Computes the shared secret from the other party's public key
      */
     computeSharedSecret(otherPublicKey) {
         if (this.debug) {
-            console.log('=== ECDH Manual - Calculo da Chave Compartilhada ===');
-            console.log('1. Chave publica recebida:', otherPublicKey.toString('hex'));
+            console.log('=== ECDH - Shared Secret ===');
+            console.log('1. Received public key:', otherPublicKey.toString('hex'));
         }
 
         if (!this.privateKey) {
-            throw new Error('Chave privada não foi gerada. Execute generateKeyPair() primeiro.');
+            throw new Error('Private key not generated. Call generateKeyPair() first.');
         }
 
-        // Criar instância ECDH para calcular chave compartilhada
         const ecdh = crypto.createECDH(this.curve);
         ecdh.setPrivateKey(this.privateKey);
-        
+
         const sharedSecret = ecdh.computeSecret(otherPublicKey);
 
         if (this.debug) {
-            console.log('2. Chave compartilhada calculada:', sharedSecret.toString('hex'));
-            console.log('3. Tamanho da chave compartilhada:', sharedSecret.length, 'bytes');
+            console.log('2. Shared secret computed:', sharedSecret.toString('hex'));
+            console.log('3. Shared secret size:', sharedSecret.length, 'bytes');
         }
 
         return sharedSecret;
     }
 
     /**
-     * Retorna informações das chaves para debug
+     * Returns key information for debugging
      */
     getKeyInfo() {
         return {
@@ -90,4 +89,3 @@ class ECDHManual {
 }
 
 module.exports = ECDHManual;
-

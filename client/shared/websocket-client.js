@@ -1,7 +1,9 @@
 /**
- * Cliente WebSocket para comunicação com o servidor
- * End-to-End Encryption: Chaves privadas ficam apenas no cliente
- * Integridade: Ed25519 assinatura + TOFU pinning + HKDF + envelope AEAD
+ * WebSocket client: protocol + all client-side cryptography
+ *
+ * End-to-end: private keys never leave the client; the server only relays
+ * public keys and already-encrypted envelopes.
+ * Integrity: Ed25519 signatures + TOFU pinning + HKDF + AEAD envelope.
  */
 
 const io = require('socket.io-client');
@@ -12,6 +14,13 @@ const { setUsername, signECDHPublicKey, verifyAndPinPeer, ensureEd25519KeyPair }
 const { deriveSessionKeys } = require('../crypto/hkdf');
 const { encryptMessage, decryptMessage } = require('../crypto/envelope');
 
+// Server events that are simply forwarded to the UI
+const FORWARDED_EVENTS = [
+    'chat_started', 'key_exchanged', 'chat_ready', 'message_sent',
+    'group_joined', 'member_joined_group', 'users_list', 'groups_list',
+    'chat_left', 'user_joined', 'error'
+];
+
 class WebSocketClient extends EventEmitter {
     constructor(serverUrl, username, debugMode = false) {
         super();
@@ -20,97 +29,100 @@ class WebSocketClient extends EventEmitter {
         this.socket = null;
         this.isConnected = false;
         this.publicKey = null;
-        this.ecdh = null; // Instância ECDH do cliente
-        this.sharedKeys = new Map(); // Chaves compartilhadas (calculadas no cliente)
-        this.groupKeys = new Map(); // Chaves de grupo
+        this.ecdh = null;               // Client ECDH instance (ephemeral)
+        this.sharedKeys = new Map();    // Pairwise session keys: peer or "group:peer" -> Buffer
+        this.groupKeys = new Map();     // Group keys: groupName -> Buffer
         this.debugMode = debugMode;
-        this.processedKeys = new Set(); // Controlar chaves publicas ja processadas (evitar loops)
-        
-        // Configurar username para arquivos Ed25519 específicos
+        this.processedKeys = new Set(); // Public keys already processed (avoids loops)
+
+        // Key files are named after the user
         setUsername(username);
     }
 
     /**
-     * Conecta ao servidor
-     * Gera chaves ECDH no cliente (chave privada fica apenas no cliente)
-     * Assina chave ECDH com Ed25519 para autenticação
+     * Connects to the server.
+     * Generates ECDH keys locally (the private key stays on the client)
+     * and signs the ECDH public key with Ed25519.
      */
     async connect() {
         return new Promise((resolve, reject) => {
             try {
                 if (this.debugMode) {
                     console.log('\n╔═══════════════════════════════════════════════════════════════╗');
-                    console.log('║              🔐 PILARES DE SEGURANÇA - CONEXÃO               ║');
+                    console.log('║              🔐 SECURITY PILLARS - CONNECTION                 ║');
                     console.log('╚═══════════════════════════════════════════════════════════════╝');
-                    console.log('\n┌─── PILAR: INTEGRIDADE ───────────────────────────────────────┐');
+                    console.log('\n┌─── PILLAR: INTEGRITY ────────────────────────────────────────┐');
                 }
-                
-                // Garantir par Ed25519 persistente (TOFU)
+
+                // Persistent Ed25519 identity (TOFU)
                 ensureEd25519KeyPair(this.debugMode);
-                
-                // GERAR CHAVES ECDH NO CLIENTE (end-to-end encryption)
+
                 if (this.debugMode) {
                     console.log('└──────────────────────────────────────────────────────────────┘');
-                    console.log('\n┌─── PILAR: CONFIDENCIALIDADE ────────────────────────────────┐');
+                    console.log('\n┌─── PILLAR: CONFIDENTIALITY ──────────────────────────────────┐');
                 }
-                this.ecdh = new ECDHManual(false); // Não mostrar debug do ECDH aqui
+                this.ecdh = new ECDHManual(false);
                 const keyPair = this.ecdh.generateKeyPair();
                 this.publicKey = keyPair.publicKey.toString('hex');
                 if (this.debugMode) {
-                    console.log('│ ✓ Chaves ECDH geradas (privada mantida localmente)');
+                    console.log('│ ✓ ECDH keys generated (private key kept locally)');
                 }
-                // privateKey fica apenas no cliente, nunca é enviado
 
-                // Assinar chave pública ECDH com Ed25519
+                // Sign the ECDH public key with Ed25519
                 if (this.debugMode) {
                     console.log('└──────────────────────────────────────────────────────────────┘');
-                    console.log('\n┌─── PILAR: INTEGRIDADE (Autenticação de Chave) ──────────────┐');
+                    console.log('\n┌─── PILLAR: INTEGRITY (Key Authentication) ───────────────────┐');
                 }
                 const signedKey = signECDHPublicKey(this.publicKey, this.debugMode);
                 if (this.debugMode) {
                     console.log('└──────────────────────────────────────────────────────────────┘\n');
                 }
 
-                // Conectar ao servidor
                 this.socket = io(this.serverUrl, {
                     transports: ['websocket'],
                     timeout: 10000
                 });
 
-                // Evento de conexão
+                let registered = false;
+
                 this.socket.on('connect', () => {
                     if (!this.debugMode) {
-                        console.log('✓ Conectado ao servidor WebSocket');
+                        console.log('✓ Connected to WebSocket server');
                     }
                     this.isConnected = true;
-                    
-                    // Enviar chave pública ECDH assinada + chave pública Ed25519
+
+                    // Send the signed ECDH public key + Ed25519 public key
                     this.socket.emit('user_connect', {
                         username: this.username,
-                        publicKey: this.publicKey, // Chave pública ECDH
-                        ed25519Pub: signedKey.ed25519Pub, // Chave pública Ed25519
-                        signature: signedKey.signature // Assinatura da chave ECDH
+                        publicKey: this.publicKey,
+                        ed25519Pub: signedKey.ed25519Pub,
+                        signature: signedKey.signature
                     });
                 });
 
-                // Evento de desconexão
                 this.socket.on('disconnect', () => {
-                    console.log('Desconectado do servidor');
+                    console.log('Disconnected from server');
                     this.isConnected = false;
                 });
 
-                // Evento de erro
                 this.socket.on('connect_error', (error) => {
-                    console.error('Erro de conexao:', error.message);
+                    console.error('Connection error:', error.message);
                     reject(error);
                 });
 
-                // Configurar event handlers
+                // A server error before registration (e.g. username taken) aborts connect()
+                this.socket.once('error', (data) => {
+                    if (!registered) {
+                        this.socket.disconnect();
+                        reject(new Error(data && data.message ? data.message : 'Server error'));
+                    }
+                });
+
                 this.setupEventHandlers();
 
-                // Resolver quando usuário for conectado
+                // Resolve once the server confirms registration
                 this.socket.on('user_connected', (data) => {
-                    // Servidor confirma que recebeu a chave pública
+                    registered = true;
                     this.emit('user_connected', data);
                     resolve(data);
                 });
@@ -122,168 +134,120 @@ class WebSocketClient extends EventEmitter {
     }
 
     /**
-     * Configura event handlers
+     * Sets up server event handlers
      */
     setupEventHandlers() {
-        // Eventos do servidor
-        this.socket.on('user_connected', (data) => {
-            this.emit('user_connected', data);
-        });
-
-        this.socket.on('chat_started', (data) => {
-            this.emit('chat_started', data);
-        });
+        for (const event of FORWARDED_EVENTS) {
+            this.socket.on(event, (data) => this.emit(event, data));
+        }
 
         this.socket.on('exchange_public_key', (data) => {
-            // CALCULAR CHAVE COMPARTILHADA NO CLIENTE
+            // Compute the shared key ON THE CLIENT
             this.handleExchangePublicKey(data);
             this.emit('exchange_public_key', data);
         });
 
-        this.socket.on('key_exchanged', (data) => {
-            // Evento de confirmação (chave já foi calculada no handleExchangePublicKey)
-            this.emit('key_exchanged', data);
-        });
-
-        this.socket.on('chat_ready', (data) => {
-            this.emit('chat_ready', data);
-        });
-
         this.socket.on('message_received', (data) => {
-            // Descriptografar mensagem NO CLIENTE
+            // Decrypt ON THE CLIENT
             this.handleReceivedMessage(data);
         });
 
-        this.socket.on('message_sent', (data) => {
-            this.emit('message_sent', data);
-        });
-
-        this.socket.on('group_joined', (data) => {
-            this.emit('group_joined', data);
-        });
-
-        this.socket.on('member_joined_group', (data) => {
-            this.emit('member_joined_group', data);
+        this.socket.on('user_left', (data) => {
+            // The peer's ECDH key was ephemeral: drop the stale 1:1 session key
+            if (data && data.username) {
+                this.forgetPeer(data.username);
+            }
+            this.emit('user_left', data);
         });
 
         this.socket.on('group_left', (data) => {
-            // ✅ Limpar nossas chaves de grupo quando SAÍMOS
+            // We left: clear our group keys
             if (data.groupName && data.clearGroupKey) {
                 this.clearGroupKeys(data.groupName);
                 if (this.debugMode) {
-                    console.log(`🧹 Chaves do grupo ${data.groupName} limpas (você saiu)`);
+                    console.log(`🧹 Keys for group ${data.groupName} cleared (you left)`);
                 }
             }
             this.emit('group_left', data);
         });
 
         this.socket.on('member_left_group', (data) => {
-            // ✅ Outro membro saiu: limpar chaves DAQUELE membro para permitir re-entrada
+            // Another member left: drop that member's keys so they can rejoin later
             if (data.groupName && data.leftMember) {
                 this.clearMemberKeysFromGroup(data.groupName, data.leftMember);
                 if (this.debugMode) {
-                    console.log(`👋 ${data.leftMember} saiu do grupo ${data.groupName}`);
-                    console.log(`   🧹 Chaves de ${data.leftMember} removidas do cache`);
-                    console.log(`   Aguardando servidor solicitar regeneração da chave de grupo...`);
+                    console.log(`👋 ${data.leftMember} left group ${data.groupName}`);
+                    console.log(`   🧹 Keys for ${data.leftMember} removed from cache`);
+                    console.log('   Waiting for the server to request a new group key...');
                 }
             }
             this.emit('member_left_group', data);
         });
 
         this.socket.on('clear_group_key', (data) => {
-            // ✅ Limpar chave quando você é o único membro restante
+            // We are the only remaining member
             if (data.groupName) {
                 this.clearGroupKeys(data.groupName);
                 if (this.debugMode) {
-                    console.log(`🧹 Chave do grupo ${data.groupName} limpa: ${data.reason}`);
+                    console.log(`🧹 Key for group ${data.groupName} cleared: ${data.reason}`);
                 }
             }
             this.emit('clear_group_key', data);
         });
 
-        this.socket.on('users_list', (data) => {
-            this.emit('users_list', data);
-        });
-
-        this.socket.on('groups_list', (data) => {
-            this.emit('groups_list', data);
-        });
-
-        this.socket.on('chat_left', (data) => {
-            this.emit('chat_left', data);
-        });
-
-        this.socket.on('user_joined', (data) => {
-            this.emit('user_joined', data);
-        });
-
-        this.socket.on('user_left', (data) => {
-            this.emit('user_left', data);
-        });
-
-        this.socket.on('error', (data) => {
-            this.emit('error', data);
-        });
-
         this.socket.on('generate_and_distribute_group_key', (data) => {
-            // Gerar e distribuir chave de grupo (apenas para criador do grupo)
+            // Only sent to the group creator
             this.generateAndDistributeGroupKey(data);
             this.emit('generate_and_distribute_group_key', data);
         });
 
         this.socket.on('group_key_received', (data) => {
-            // Receber chave de grupo criptografada
             this.handleGroupKeyReceived(data);
             this.emit('group_key_received', data);
         });
 
         this.socket.on('group_message_received', (data) => {
-            // Descriptografar mensagem de grupo NO CLIENTE
             this.handleReceivedGroupMessage(data);
         });
     }
 
     /**
-     * Processa mensagem recebida (privada)
-     * Valida e descriptografa envelope v1 NO CLIENTE (end-to-end)
+     * Handles a received private message: validates and decrypts the v1 envelope
      */
     async handleReceivedMessage(data) {
         const { from, envelope } = data;
 
         try {
-            // Buscar chave compartilhada NO CLIENTE
             const sharedKey = this.sharedKeys.get(from);
 
             if (!sharedKey) {
-                console.error(`Chave compartilhada nao encontrada para ${from}`);
+                console.error(`Shared key not found for ${from}`);
                 this.emit('error', {
-                    message: `Chave compartilhada não encontrada para ${from}`,
+                    message: `Shared key not found for ${from}`,
                     type: 'NoSharedKey'
                 });
                 return;
             }
 
-            // VALIDAR E DESCRIPTOGRAFAR ENVELOPE NO CLIENTE
             if (this.debugMode) {
-                console.log(`\n┌─── PILAR: INTEGRIDADE (Validação) + CONFIDENCIALIDADE (Decifra) ───┐`);
+                console.log('\n┌─── PILLAR: INTEGRITY (Validation) + CONFIDENTIALITY (Decrypt) ───┐');
             }
             const decrypted = decryptMessage(envelope, sharedKey, from, this.debugMode);
             if (this.debugMode) {
                 console.log('└──────────────────────────────────────────────────────────────┘\n');
             }
 
-            // Emitir evento com mensagem descriptografada
             this.emit('message_received', {
                 from: from,
-                message: decrypted, // Mensagem descriptografada
-                envelope: envelope, // Mantém envelope para debug
+                message: decrypted,
+                envelope: envelope, // kept for debugging
                 timestamp: envelope.ts || new Date().toISOString()
             });
 
         } catch (error) {
-            console.error('Erro ao validar/descriptografar mensagem:', error.message);
+            console.error('Error validating/decrypting message:', error.message);
             this.emit('error', {
-                message: `Erro ao descriptografar mensagem de ${from}`,
+                message: `Error decrypting message from ${from}`,
                 details: error.message,
                 type: 'DecryptionError'
             });
@@ -291,47 +255,43 @@ class WebSocketClient extends EventEmitter {
     }
 
     /**
-     * Processa mensagem de grupo recebida
-     * Valida e descriptografa envelope v1 NO CLIENTE (end-to-end)
+     * Handles a received group message: validates and decrypts the v1 envelope
      */
     async handleReceivedGroupMessage(data) {
         const { from, groupName, envelope } = data;
 
         try {
-            // Buscar chave de grupo NO CLIENTE
             const groupKey = this.groupKeys.get(groupName);
 
             if (!groupKey) {
-                console.error(`Chave de grupo nao encontrada para ${groupName}`);
+                console.error(`Group key not found for ${groupName}`);
                 this.emit('error', {
-                    message: `Chave de grupo não encontrada para ${groupName}`,
+                    message: `Group key not found for ${groupName}`,
                     type: 'NoGroupKey'
                 });
                 return;
             }
 
-            // VALIDAR E DESCRIPTOGRAFAR ENVELOPE NO CLIENTE
             if (this.debugMode) {
-                console.log(`\n┌─── PILAR: INTEGRIDADE (Validação) + CONFIDENCIALIDADE (Decifra) ───┐`);
+                console.log('\n┌─── PILLAR: INTEGRITY (Validation) + CONFIDENTIALITY (Decrypt) ───┐');
             }
             const decrypted = decryptMessage(envelope, groupKey, from, this.debugMode);
             if (this.debugMode) {
                 console.log('└──────────────────────────────────────────────────────────────┘\n');
             }
 
-            // Emitir evento com mensagem descriptografada
             this.emit('group_message_received', {
                 from: from,
                 groupName: groupName,
-                message: decrypted, // Mensagem descriptografada
-                envelope: envelope, // Mantém envelope para debug
+                message: decrypted,
+                envelope: envelope,
                 timestamp: envelope.ts || new Date().toISOString()
             });
 
         } catch (error) {
-            console.error('Erro ao validar/descriptografar mensagem de grupo:', error.message);
+            console.error('Error validating/decrypting group message:', error.message);
             this.emit('error', {
-                message: `Erro ao descriptografar mensagem de grupo de ${from}`,
+                message: `Error decrypting group message from ${from}`,
                 details: error.message,
                 type: 'GroupDecryptionError'
             });
@@ -339,226 +299,181 @@ class WebSocketClient extends EventEmitter {
     }
 
     /**
-     * Inicia chat com usuário
+     * Starts a 1:1 chat
      */
     startChat(targetUser) {
-        if (!this.isConnected) {
-            throw new Error('Não conectado ao servidor');
-        }
-
-        this.socket.emit('start_chat', {
-            targetUser: targetUser
-        });
+        this.ensureConnected();
+        this.socket.emit('start_chat', { targetUser });
     }
 
     /**
-     * Processa troca de chave pública recebida do servidor
-     * Verifica assinatura Ed25519 (TOFU), calcula chave compartilhada NO CLIENTE (end-to-end)
-     * Deriva chaves via HKDF
-     * EVITA LOOPS: Nao reenvia a chave publica (servidor ja fez o roteamento inicial)
+     * Handles a public key routed by the server.
+     * Verifies the Ed25519 signature (TOFU), computes the ECDH shared secret
+     * locally and derives the session key via HKDF.
+     * Does not send our key back (the server already routed both directions).
      */
     handleExchangePublicKey(data) {
         const { targetUser, publicKey, ed25519Pub, signature, isGroup, groupName } = data;
 
         if (!this.ecdh) {
-            console.error('ECDH nao inicializado');
+            console.error('ECDH not initialized');
             return;
         }
 
         if (!publicKey) {
-            console.error('Chave publica nao fornecida');
+            console.error('Public key not provided');
             return;
         }
 
-        // Verificar campos de autenticação
         if (!ed25519Pub || !signature) {
-            console.error(`⚠️  Peer ${targetUser} não enviou assinatura Ed25519. Conexão rejeitada.`);
+            console.error(`⚠️  Peer ${targetUser} sent no Ed25519 signature. Connection rejected.`);
             this.emit('error', {
-                message: `Peer ${targetUser} não enviou credenciais de autenticação`,
+                message: `Peer ${targetUser} sent no authentication credentials`,
                 type: 'MissingAuthentication'
             });
             return;
         }
 
-        // VERIFICAR SE JA PROCESSAMOS ESTA CHAVE (evitar loops)
-        // Para grupos, incluir groupName no keyId para permitir re-processamento após saída/entrada
-        const keyId = groupName 
+        // Skip keys we already processed. For groups the group name is part of
+        // the id, so the same peer can be processed again after leaving/rejoining.
+        const keyId = groupName
             ? `${groupName}:${targetUser}:${publicKey.substring(0, 16)}`
             : `${targetUser}:${publicKey.substring(0, 16)}`;
-        
+
         if (this.processedKeys.has(keyId)) {
             if (this.debugMode) {
-                console.log(`Chave publica de ${targetUser} ja foi processada, ignorando...`);
+                console.log(`Public key from ${targetUser} already processed, ignoring...`);
             }
-            return; // Já processamos esta chave, evitar loop
+            return;
         }
         this.processedKeys.add(keyId);
 
         try {
             if (this.debugMode) {
                 console.log('\n╔═══════════════════════════════════════════════════════════════╗');
-                console.log(`║         🔐 PILARES DE SEGURANÇA - Troca com ${targetUser.padEnd(14)}║`);
+                console.log(`║         🔐 SECURITY PILLARS - Exchange with ${targetUser.padEnd(17)}║`);
                 console.log('╚═══════════════════════════════════════════════════════════════╝');
-                console.log('\n┌─── PILAR: INTEGRIDADE (Verificação de Identidade) ──────────┐');
+                console.log('\n┌─── PILLAR: INTEGRITY (Identity Verification) ────────────────┐');
             }
-            
-            // Verificar assinatura Ed25519 e aplicar TOFU pinning
+
             verifyAndPinPeer(targetUser, ed25519Pub, publicKey, signature, this.debugMode);
 
             if (this.debugMode) {
                 console.log('└──────────────────────────────────────────────────────────────┘');
-                console.log('\n┌─── PILAR: CONFIDENCIALIDADE (Estabelecimento de Chave) ─────┐');
+                console.log('\n┌─── PILLAR: CONFIDENTIALITY (Key Establishment) ──────────────┐');
             }
 
-            // Converter chave publica de hex para Buffer
-            const publicKeyBuffer = Buffer.from(publicKey, 'hex');
-
-            // CALCULAR CHAVE COMPARTILHADA NO CLIENTE
-            const sharedSecret = this.ecdh.computeSharedSecret(publicKeyBuffer);
+            const sharedSecret = this.ecdh.computeSharedSecret(Buffer.from(publicKey, 'hex'));
             if (this.debugMode) {
-                console.log('│ ✓ Shared secret ECDH computado');
+                console.log('│ ✓ ECDH shared secret computed');
             }
-            
-            // Derivar chaves via HKDF (contexto único por par)
+
+            // HKDF with a context unique to the pair
             const context = [this.username, targetUser].sort().join(':');
             const { encKey } = deriveSessionKeys(sharedSecret, context, this.debugMode);
-            
+
             if (this.debugMode) {
                 console.log('└──────────────────────────────────────────────────────────────┘');
             }
-            
-            // ARMAZENAR CHAVE COMPARTILHADA NO CLIENTE
+
             if (isGroup && groupName) {
-                // Para grupos, armazenar com chave única incluindo grupo
-                // Armazenar em ambas as ordens para facilitar busca
                 this.sharedKeys.set(`${groupName}:${targetUser}`, encKey);
-                // Também armazenar com nosso username para busca reversa
-                // (o outro cliente vai usar nosso username como chave)
             } else {
                 this.sharedKeys.set(targetUser, encKey);
             }
 
-            // REMOVIDO: Nao reenviar chave publica de volta
-            // O servidor ja fez o roteamento inicial no handleStartChat
-            // Reenviar criaria um loop infinito!
-
             if (!this.debugMode) {
-                console.log(`✓ Chave de sessão estabelecida com ${targetUser}`);
+                console.log(`✓ Session key established with ${targetUser}`);
             }
 
         } catch (error) {
-            console.error('Erro ao calcular chave compartilhada:', error.message);
-            // Remover da lista de processadas em caso de erro
+            console.error('Error computing shared key:', error.message);
             this.processedKeys.delete(keyId);
         }
     }
 
     /**
-     * Gera e distribui chave de grupo (apenas para criador do grupo)
-     * End-to-End: Criador gera chave aleatoria e distribui criptografada
+     * Looks up the pairwise key with a member (group-scoped first, then 1:1)
+     */
+    getPairwiseKey(groupName, member) {
+        return this.sharedKeys.get(`${groupName}:${member}`) || this.sharedKeys.get(member);
+    }
+
+    /**
+     * Generates and distributes a group key (group creator only).
+     * The key is random and is sent to each member inside an envelope
+     * encrypted with that member's pairwise key.
      */
     async generateAndDistributeGroupKey(data) {
         const { groupName, members } = data;
 
         if (!groupName || !members) {
-            console.error('Dados insuficientes para gerar chave de grupo');
+            console.error('Not enough data to generate the group key');
             return;
         }
 
         try {
             if (this.debugMode) {
                 console.log('\n╔═══════════════════════════════════════════════════════════════╗');
-                console.log(`║      🔐 CRIAÇÃO DE GRUPO: ${groupName.padEnd(35)}║`);
+                console.log(`║      🔐 GROUP KEY: ${groupName.padEnd(43)}║`);
                 console.log('╚═══════════════════════════════════════════════════════════════╝');
-                console.log('\n┌─── PILAR: CONFIDENCIALIDADE ─────────────────────────────────┐');
-            }
-            
-            // Gerar chave de grupo aleatoria (128 bits)
-            const groupKey = crypto.randomBytes(16);
-            
-            if (this.debugMode) {
-                console.log('│ ► Gerando chave de grupo AES-128...');
-                console.log(`│ ✓ Chave gerada: ${groupKey.toString('hex').substring(0, 16)}...`);
-                console.log('│');
-                console.log('│ ► Distribuindo chave para membros...');
-            } else {
-                console.log(`Gerando chave de grupo ${groupName}...`);
+                console.log('\n┌─── PILLAR: CONFIDENTIALITY ──────────────────────────────────┐');
             }
 
-            // Criptografar chave de grupo para cada membro usando suas chaves compartilhadas
+            const groupKey = crypto.randomBytes(16); // 128 bits
+
+            if (this.debugMode) {
+                console.log('│ ► Generating AES-128 group key...');
+                console.log(`│ ✓ Key generated: ${groupKey.toString('hex').substring(0, 16)}...`);
+                console.log('│');
+                console.log('│ ► Distributing key to members...');
+            } else {
+                console.log(`Generating key for group ${groupName}...`);
+            }
+
             const encryptedKeys = [];
-            
+
             for (const member of members) {
                 if (member === this.username) {
-                    // Para nós mesmos, armazenar a chave diretamente
-                    this.groupKeys.set(groupName, groupKey);
                     continue;
                 }
 
-                // Buscar chave compartilhada com este membro
-                const sharedKeyId = `${groupName}:${member}`;
-                let sharedKey = this.sharedKeys.get(sharedKeyId);
-                
+                const sharedKey = this.getPairwiseKey(groupName, member);
                 if (!sharedKey) {
-                    sharedKey = this.sharedKeys.get(member);
-                }
-
-                if (!sharedKey) {
-                    console.error(`Chave compartilhada nao encontrada com ${member}`);
+                    console.error(`Shared key not found with ${member}`);
                     continue;
                 }
 
-                // Criptografar chave de grupo usando a chave compartilhada com envelope
-                const envelope = encryptMessage(
-                    groupKey.toString('hex'),
-                    sharedKey,
-                    this.username,
-                    member,
-                    false,
-                    false // Sem debug para não poluir
-                );
-
-                encryptedKeys.push({
-                    member: member,
-                    encryptedKey: envelope
-                });
+                const envelope = encryptMessage(groupKey.toString('hex'), sharedKey, this.username, member);
+                encryptedKeys.push({ member, encryptedKey: envelope });
 
                 if (this.debugMode) {
-                    console.log(`│ ✓ Chave criptografada para ${member}`);
+                    console.log(`│ ✓ Key encrypted for ${member}`);
                 }
             }
 
-            // Armazenar chave de grupo para nós mesmos
             this.groupKeys.set(groupName, groupKey);
 
             if (this.debugMode) {
                 console.log('└──────────────────────────────────────────────────────────────┘');
-                console.log('\n┌─── PILAR: INTEGRIDADE ───────────────────────────────────────┐');
-                console.log('│ ✓ Cada envelope contém tag de autenticação');
-                console.log('│ ✓ Proteção contra replay e adulteração');
+                console.log('\n┌─── PILLAR: INTEGRITY ────────────────────────────────────────┐');
+                console.log('│ ✓ Each envelope carries an authentication tag');
+                console.log('│ ✓ Protected against replay and tampering');
                 console.log('└──────────────────────────────────────────────────────────────┘\n');
             }
 
-            // Enviar chaves criptografadas para o servidor distribuir
-            this.socket.emit('distribute_group_key', {
-                groupName: groupName,
-                encryptedKeys: encryptedKeys
-            });
+            // The server only routes the (encrypted) keys
+            this.socket.emit('distribute_group_key', { groupName, encryptedKeys });
 
-            if (this.debugMode) {
-                console.log(`✓ Grupo '${groupName}' criado com ${encryptedKeys.length + 1} membros\n`);
-            } else {
-                console.log(`Chave de grupo ${groupName} gerada e distribuida para ${encryptedKeys.length} membros`);
-            }
+            console.log(`Key for group ${groupName} generated and sent to ${encryptedKeys.length} member(s)`);
 
         } catch (error) {
-            console.error(`Erro ao gerar e distribuir chave de grupo ${groupName}:`, error.message);
+            console.error(`Error generating/distributing key for group ${groupName}:`, error.message);
         }
     }
 
     /**
-     * Processa chave de grupo recebida (criptografada)
-     * End-to-End: Descriptografa chave de grupo usando chave compartilhada
+     * Handles a received (encrypted) group key
      */
     async handleGroupKeyReceived(data) {
         const { groupName, encryptedKey, from } = data;
@@ -566,85 +481,65 @@ class WebSocketClient extends EventEmitter {
         try {
             if (this.debugMode) {
                 console.log('\n╔═══════════════════════════════════════════════════════════════╗');
-                console.log(`║      📥 RECEBENDO CHAVE DE GRUPO: ${groupName.padEnd(27)}║`);
+                console.log(`║      📥 RECEIVING GROUP KEY: ${groupName.padEnd(33)}║`);
                 console.log('╚═══════════════════════════════════════════════════════════════╝');
-                console.log('\n┌─── PILAR: INTEGRIDADE + CONFIDENCIALIDADE ───────────────────┐');
-            }
-            
-            // Buscar chave compartilhada com o criador do grupo
-            const sharedKeyId = `${groupName}:${from}`;
-            let sharedKey = this.sharedKeys.get(sharedKeyId);
-            
-            if (!sharedKey) {
-                sharedKey = this.sharedKeys.get(from);
+                console.log('\n┌─── PILLAR: INTEGRITY + CONFIDENTIALITY ──────────────────────┐');
             }
 
+            const sharedKey = this.getPairwiseKey(groupName, from);
             if (!sharedKey) {
-                console.error(`Chave compartilhada nao encontrada com ${from} para descriptografar chave de grupo`);
+                console.error(`Shared key with ${from} not found; cannot decrypt group key`);
                 return;
             }
 
             if (this.debugMode) {
-                console.log(`│ ► Descriptografando chave recebida de ${from}...`);
+                console.log(`│ ► Decrypting key received from ${from}...`);
             }
 
-            // Descriptografar chave de grupo do envelope
             const groupKeyHex = decryptMessage(encryptedKey, sharedKey, from, this.debugMode);
-            const groupKey = Buffer.from(groupKeyHex, 'hex');
-
-            // Armazenar chave de grupo
-            this.groupKeys.set(groupName, groupKey);
+            this.groupKeys.set(groupName, Buffer.from(groupKeyHex, 'hex'));
 
             if (this.debugMode) {
                 console.log('└──────────────────────────────────────────────────────────────┘');
-                console.log(`\n✓ Chave de grupo '${groupName}' recebida com sucesso!\n`);
-            } else {
-                console.log(`Chave de grupo ${groupName} recebida e descriptografada com sucesso!`);
             }
+            console.log(`Key for group ${groupName} received and decrypted`);
 
         } catch (error) {
-            console.error(`Erro ao descriptografar chave de grupo ${groupName}:`, error.message);
+            console.error(`Error decrypting key for group ${groupName}:`, error.message);
         }
     }
 
     /**
-     * Envia mensagem
-     * Criptografa a mensagem NO CLIENTE usando envelope v1 antes de enviar (end-to-end)
+     * Sends a message: encrypts it into a v1 envelope ON THE CLIENT first
      */
     async sendMessage(data) {
-        if (!this.isConnected) {
-            throw new Error('Não conectado ao servidor');
-        }
+        this.ensureConnected();
 
         const { message, targetUser, isGroup } = data;
 
-        // Buscar chave NO CLIENTE
-        const key = isGroup 
+        const key = isGroup
             ? this.groupKeys.get(targetUser)
             : this.sharedKeys.get(targetUser);
 
         if (!key) {
-            throw new Error(`Chave nao encontrada para ${isGroup ? 'grupo' : 'usuario'} ${targetUser}`);
+            throw new Error(`No key found for ${isGroup ? 'group' : 'user'} ${targetUser}`);
         }
 
         try {
-            // CRIPTOGRAFAR NO CLIENTE com envelope v1
             if (this.debugMode) {
-                console.log('\n┌─── PILAR: CONFIDENCIALIDADE (Cifra) + INTEGRIDADE (Tag) ────────┐');
+                console.log('\n┌─── PILLAR: CONFIDENTIALITY (Encrypt) + INTEGRITY (Tag) ─────────┐');
             }
             const envelope = encryptMessage(message, key, this.username, targetUser, isGroup, this.debugMode);
             if (this.debugMode) {
                 console.log('└──────────────────────────────────────────────────────────────┘\n');
             }
 
-            // Enviar envelope JA CRIPTOGRAFADO
             this.socket.emit('send_message', {
-                envelope: envelope, // Envelope com integridade
+                envelope: envelope,
                 targetUser: targetUser,
                 isGroup: isGroup || false
             });
 
-            // Emitir evento local para confirmação
             this.emit('message_sent', {
                 message: message,
                 envelope: envelope,
@@ -653,149 +548,107 @@ class WebSocketClient extends EventEmitter {
             });
 
         } catch (error) {
-            console.error('Erro ao criptografar mensagem:', error.message);
+            console.error('Error encrypting message:', error.message);
             throw error;
         }
     }
 
     /**
-     * Entra em grupo
+     * Joins (or creates) a group
      */
     joinGroup(groupName) {
-        if (!this.isConnected) {
-            throw new Error('Não conectado ao servidor');
-        }
-
-        this.socket.emit('join_group', {
-            groupName: groupName
-        });
+        this.ensureConnected();
+        this.socket.emit('join_group', { groupName });
     }
 
     /**
-     * Sai do grupo
+     * Leaves a group
      */
     leaveGroup(groupName) {
-        if (!this.isConnected) {
-            throw new Error('Não conectado ao servidor');
-        }
-
-        this.socket.emit('leave_group', {
-            groupName: groupName
-        });
+        this.ensureConnected();
+        this.socket.emit('leave_group', { groupName });
     }
 
     /**
-     * Sai do chat atual
+     * Leaves the current 1:1 chat (session keys are kept to resume the conversation)
      */
     leaveChat() {
-        if (!this.isConnected) {
-            throw new Error('Não conectado ao servidor');
-        }
-
+        this.ensureConnected();
         this.socket.emit('leave_chat');
-        
-        // Limpar chaves processadas ao sair do chat (permite re-entrar)
-        // Manter as chaves compartilhadas para poder retomar a conversa
-    }
-    
-    /**
-     * Limpa chaves processadas para um usuário específico
-     * Útil quando precisar reprocessar uma chave
-     */
-    clearProcessedKey(targetUser) {
-        // Remover todas as chaves processadas que começam com o nome do usuário
-        const keysToRemove = [];
-        this.processedKeys.forEach(keyId => {
-            if (keyId.startsWith(`${targetUser}:`)) {
-                keysToRemove.push(keyId);
-            }
-        });
-        keysToRemove.forEach(keyId => this.processedKeys.delete(keyId));
     }
 
     /**
-     * Limpa todas as chaves relacionadas a um grupo
-     * Usado quando alguém sai do grupo ou quando o secret share é recriado
+     * Clears every key related to a group (used when we leave)
      */
     clearGroupKeys(groupName) {
-        // Limpar chave de grupo
         this.groupKeys.delete(groupName);
 
-        // Limpar chaves compartilhadas relacionadas ao grupo
-        const keysToRemove = [];
-        this.sharedKeys.forEach((key, keyId) => {
+        for (const keyId of Array.from(this.sharedKeys.keys())) {
             if (keyId.startsWith(`${groupName}:`)) {
-                keysToRemove.push(keyId);
+                this.sharedKeys.delete(keyId);
             }
-        });
-        keysToRemove.forEach(keyId => this.sharedKeys.delete(keyId));
+        }
 
-        // Limpar chaves processadas relacionadas ao grupo
-        const processedKeysToRemove = [];
-        this.processedKeys.forEach(keyId => {
-            if (keyId.includes(groupName)) {
-                processedKeysToRemove.push(keyId);
+        for (const keyId of Array.from(this.processedKeys)) {
+            if (keyId.startsWith(`${groupName}:`)) {
+                this.processedKeys.delete(keyId);
             }
-        });
-        processedKeysToRemove.forEach(keyId => this.processedKeys.delete(keyId));
+        }
 
         if (this.debugMode) {
-            console.log(`Chaves do grupo ${groupName} foram limpas`);
+            console.log(`Keys for group ${groupName} cleared`);
         }
     }
 
     /**
-     * Limpa chaves de um membro específico que saiu do grupo
-     * Para permitir que ele possa entrar novamente como "novo"
+     * Clears the keys of a member who left a group, so they can rejoin as "new"
      */
     clearMemberKeysFromGroup(groupName, memberName) {
-        // Limpar chave compartilhada com aquele membro
-        const groupKeyId = `${groupName}:${memberName}`;
-        const directKeyId = memberName;
-        
-        this.sharedKeys.delete(groupKeyId);
-        this.sharedKeys.delete(directKeyId);
+        this.sharedKeys.delete(`${groupName}:${memberName}`);
+        this.sharedKeys.delete(memberName);
 
-        // Limpar TODAS as chaves processadas relacionadas àquele membro no grupo
-        // Formato: groupName:memberName:publicKeyPrefix
-        const processedToRemove = [];
-        this.processedKeys.forEach(keyId => {
-            if (keyId.startsWith(`${groupName}:${memberName}:`)) {
-                processedToRemove.push(keyId);
-            }
-        });
-        processedToRemove.forEach(keyId => this.processedKeys.delete(keyId));
+        // processedKeys format: groupName:memberName:publicKeyPrefix
+        const toRemove = Array.from(this.processedKeys)
+            .filter(keyId => keyId.startsWith(`${groupName}:${memberName}:`));
+        toRemove.forEach(keyId => this.processedKeys.delete(keyId));
 
         if (this.debugMode) {
-            console.log(`🧹 Chaves de ${memberName} removidas do cache do grupo ${groupName}`);
-            console.log(`   Removidas ${processedToRemove.length} entradas de processedKeys`);
+            console.log(`🧹 Keys for ${memberName} removed from group ${groupName} cache`);
+            console.log(`   Removed ${toRemove.length} processedKeys entries`);
         }
     }
 
     /**
-     * Lista usuários online
+     * Forgets the 1:1 session key of a peer who disconnected
+     * (group-scoped keys are cleared by member_left_group)
+     */
+    forgetPeer(username) {
+        this.sharedKeys.delete(username);
+        for (const keyId of Array.from(this.processedKeys)) {
+            if (keyId.startsWith(`${username}:`)) {
+                this.processedKeys.delete(keyId);
+            }
+        }
+    }
+
+    /**
+     * Lists online users
      */
     listUsers() {
-        if (!this.isConnected) {
-            throw new Error('Não conectado ao servidor');
-        }
-
+        this.ensureConnected();
         this.socket.emit('list_users');
     }
 
     /**
-     * Lista grupos
+     * Lists groups
      */
     listGroups() {
-        if (!this.isConnected) {
-            throw new Error('Não conectado ao servidor');
-        }
-
+        this.ensureConnected();
         this.socket.emit('list_groups');
     }
 
     /**
-     * Desconecta do servidor
+     * Disconnects from the server
      */
     disconnect() {
         if (this.socket) {
@@ -804,8 +657,14 @@ class WebSocketClient extends EventEmitter {
         }
     }
 
+    ensureConnected() {
+        if (!this.isConnected) {
+            throw new Error('Not connected to the server');
+        }
+    }
+
     /**
-     * Retorna status da conexão
+     * Connection status
      */
     getStatus() {
         return {
@@ -817,20 +676,20 @@ class WebSocketClient extends EventEmitter {
     }
 
     /**
-     * Retorna informações das chaves (incluindo chave privada)
-     * ATENCAO: Chave privada é informacao sensivel!
+     * Key information (including the ECDH private key)
+     * WARNING: the private key is sensitive! Shown for educational purposes.
      */
     getKeyInfo() {
         if (!this.ecdh) {
             return {
-                error: 'ECDH não inicializado',
+                error: 'ECDH not initialized',
                 hasPrivateKey: false,
                 hasPublicKey: false
             };
         }
 
         const keyInfo = this.ecdh.getKeyInfo();
-        
+
         return {
             hasPrivateKey: keyInfo.hasPrivateKey,
             hasPublicKey: keyInfo.hasPublicKey,
@@ -843,24 +702,21 @@ class WebSocketClient extends EventEmitter {
     }
 
     /**
-     * Limpa toda a sessão atual (chaves efêmeras e estado)
-     * Usado pelo comando /newprofile
+     * Clears the whole current session (ephemeral keys and state).
+     * Used by /newprofile.
      */
     clearSession() {
-        // Limpar chaves ECDH efêmeras
         this.publicKey = null;
         this.ecdh = null;
-        
-        // Limpar chaves derivadas
+
         this.sharedKeys.clear();
         this.groupKeys.clear();
         this.processedKeys.clear();
-        
-        console.log('   ✓ Chaves ECDH efêmeras limpas');
-        console.log('   ✓ Chaves derivadas (HKDF) limpas');
-        console.log('   ✓ Cache de processamento limpo');
+
+        console.log('   ✓ Ephemeral ECDH keys cleared');
+        console.log('   ✓ Derived (HKDF) keys cleared');
+        console.log('   ✓ Processing cache cleared');
     }
 }
 
 module.exports = WebSocketClient;
-

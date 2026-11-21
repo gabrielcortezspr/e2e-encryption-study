@@ -1,5 +1,5 @@
 /**
- * Manipulador de comandos CLI
+ * CLI command handler
  */
 
 const chalk = require('chalk');
@@ -8,16 +8,33 @@ const fs = require('fs');
 const path = require('path');
 const { getKeypairFile, getTofuStore } = require('../crypto/ed25519-tofu');
 
+const COMMANDS = [
+    ['/help', 'Show this help'],
+    ['/users', 'List online users'],
+    ['/chat <user>', 'Start a 1:1 chat'],
+    ['/group <name>', 'Create or join a group'],
+    ['/groups', 'List groups'],
+    ['/leave', 'Leave the current chat/group'],
+    ['/status', 'Connection status'],
+    ['/keys', 'Show your keys'],
+    ['/debug', 'Toggle debug mode'],
+    ['/newprofile', 'Simulate a reinstall'],
+    ['/delete @user', "Forget a user's TOFU pin"],
+    ['/quit', 'Exit']
+];
+
+const LINE = '─────────────────────────────────────────────────────────────';
+
 class CommandHandler {
     constructor(client) {
         this.client = client;
     }
 
     /**
-     * Manipula comando do usuário
+     * Dispatches a user command
      */
     handleCommand(input) {
-        const parts = input.split(' ');
+        const parts = input.split(' ').filter(Boolean);
         const command = parts[0].toLowerCase();
         const args = parts.slice(1);
 
@@ -26,7 +43,7 @@ class CommandHandler {
                 this.showHelp();
                 break;
             case '/users':
-                this.listUsers();
+                this.client.wsClient.listUsers();
                 break;
             case '/chat':
                 this.startChat(args);
@@ -35,7 +52,7 @@ class CommandHandler {
                 this.joinGroup(args);
                 break;
             case '/groups':
-                this.listGroups();
+                this.client.wsClient.listGroups();
                 break;
             case '/leave':
                 this.leaveChat();
@@ -60,496 +77,447 @@ class CommandHandler {
                 this.quit();
                 break;
             default:
-                console.log(chalk.red('❌ Comando não reconhecido. Use /help para ver comandos disponíveis.'));
+                console.log(chalk.red('❌ Unknown command. Use /help to list commands.'));
                 this.client.setPrompt();
         }
     }
 
     /**
-     * Mostra ajuda
+     * Prints the command table
+     */
+    printCommands() {
+        const width = 48;
+        console.log(chalk.cyan('┌' + '─'.repeat(width) + '┐'));
+        console.log(chalk.cyan('│ ' + 'Available commands:'.padEnd(width - 1) + '│'));
+        console.log(chalk.cyan('│' + ' '.repeat(width) + '│'));
+        for (const [cmd, desc] of COMMANDS) {
+            console.log(chalk.cyan('│ ' + `${cmd.padEnd(15)}- ${desc}`.padEnd(width - 1) + '│'));
+        }
+        console.log(chalk.cyan('└' + '─'.repeat(width) + '┘'));
+        console.log('');
+    }
+
+    /**
+     * Shows help
      */
     showHelp() {
-        console.log(chalk.cyan('┌─────────────────────────────────────────┐'));
-        console.log(chalk.cyan('│ Comandos disponíveis:                   │'));
-        console.log(chalk.cyan('│                                         │'));
-        console.log(chalk.cyan('│ /help          - Mostra esta ajuda      │'));
-        console.log(chalk.cyan('│ /users         - Lista usuários online  │'));
-        console.log(chalk.cyan('│ /chat <user>   - Inicia chat 1:1        │'));
-        console.log(chalk.cyan('│ /group <nome>  - Cria/entra em grupo    │'));
-        console.log(chalk.cyan('│ /groups        - Lista grupos           │'));
-        console.log(chalk.cyan('│ /leave         - Sai do chat atual      │'));
-        console.log(chalk.cyan('│ /status        - Status da conexão      │'));
-        console.log(chalk.cyan('│ /keys          - Mostra suas chaves     │'));
-        console.log(chalk.cyan('│ /debug         - Toggle modo debug      │'));
-        console.log(chalk.cyan('│ /newprofile    - Simula reinstalação    │'));
-        console.log(chalk.cyan('│ /delete @user  - Remove TOFU de usuário │'));
-        console.log(chalk.cyan('│ /quit          - Sair do sistema        │'));
-        console.log(chalk.cyan('└─────────────────────────────────────────┘'));
+        this.printCommands();
+        console.log(chalk.yellow('💡 Tips:'));
+        console.log('   - To send a message, just type it (no /)');
+        console.log('   - Use /chat <user> for a 1:1 conversation');
+        console.log('   - Use /group <name> to create/join groups');
+        console.log('   - Use /debug to see every cryptographic step');
         console.log('');
-        console.log(chalk.yellow('💡 Dicas:'));
-        console.log('   - Para enviar mensagem, digite normalmente (sem /)');
-        console.log('   - Use /chat <usuário> para conversar 1:1');
-        console.log('   - Use /group <nome> para criar/entrar em grupos');
-        console.log('   - Use /debug para ver detalhes da criptografia');
-        console.log('');
-        console.log(chalk.cyan('🔒 Segurança (TOFU):'));
-        console.log('   - /newprofile: Simula reinstalação (gera nova identidade)');
-        console.log('   - /delete @user: Remove TOFU (aceita nova identidade)');
-        console.log('   - Útil quando alguém reinstala o sistema');
+        console.log(chalk.cyan('🔒 Security (TOFU):'));
+        console.log('   - /newprofile: simulates a reinstall (new identity)');
+        console.log('   - /delete @user: forgets a pin (accepts a new identity)');
+        console.log('   - Useful when someone legitimately reinstalls');
         this.client.setPrompt();
     }
 
     /**
-     * Lista usuários online
-     */
-    listUsers() {
-        this.client.wsClient.listUsers();
-    }
-
-    /**
-     * Mostra lista de usuários
+     * Prints the user list
      */
     showUsersList(data) {
-        console.log(chalk.blue('👥 Usuários online:'));
-        
+        console.log(chalk.blue('👥 Online users:'));
+
         if (data.users.length === 0) {
-            console.log(chalk.gray('   Nenhum usuário online'));
+            console.log(chalk.gray('   Nobody online'));
         } else {
             data.users.forEach(user => {
-                const status = user.isInChat ? chalk.yellow('(em chat)') : chalk.green('(disponível)');
+                const status = user.isInChat ? chalk.yellow('(in a chat)') : chalk.green('(available)');
                 console.log(chalk.white(`   - ${user.username}`), status);
             });
         }
-        
-        console.log(chalk.blue(`Total: ${data.count} usuários`));
+
+        console.log(chalk.blue(`Total: ${data.count} user(s)`));
         this.client.setPrompt();
     }
 
     /**
-     * Inicia chat 1:1
+     * Starts a 1:1 chat
      */
     startChat(args) {
         if (args.length === 0) {
-            console.log(chalk.red('❌ Use: /chat <usuário>'));
+            console.log(chalk.red('❌ Usage: /chat <user>'));
             this.client.setPrompt();
             return;
         }
 
         const targetUser = args[0];
-        
+
         if (targetUser === this.client.username) {
-            console.log(chalk.red('❌ Não é possível conversar consigo mesmo'));
+            console.log(chalk.red('❌ You cannot chat with yourself'));
             this.client.setPrompt();
             return;
         }
 
-        console.log(chalk.yellow(`Iniciando chat com ${targetUser}...`));
+        console.log(chalk.yellow(`Starting chat with ${targetUser}...`));
         this.client.wsClient.startChat(targetUser);
     }
 
     /**
-     * Entra em grupo
+     * Joins a group
      */
     joinGroup(args) {
         if (args.length === 0) {
-            console.log(chalk.red('❌ Use: /group <nome>'));
+            console.log(chalk.red('❌ Usage: /group <name>'));
             this.client.setPrompt();
             return;
         }
 
         const groupName = args[0];
-        console.log(chalk.yellow(`👥 Entrando no grupo "${groupName}"...`));
+        console.log(chalk.yellow(`👥 Joining group "${groupName}"...`));
         this.client.wsClient.joinGroup(groupName);
     }
 
     /**
-     * Lista grupos
-     */
-    listGroups() {
-        this.client.wsClient.listGroups();
-    }
-
-    /**
-     * Mostra lista de grupos
+     * Prints the group list
      */
     showGroupsList(data) {
-        console.log(chalk.blue('👥 Grupos disponíveis:'));
-        
+        console.log(chalk.blue('👥 Groups:'));
+
         if (data.groups.length === 0) {
-            console.log(chalk.gray('   Nenhum grupo disponível'));
+            console.log(chalk.gray('   No groups'));
         } else {
             data.groups.forEach(group => {
-                const members = group.members.join(', ');
-                const status = group.keysEstablished ? chalk.green('(seguro)') : chalk.yellow('(configurando)');
+                const status = group.keysEstablished ? chalk.green('(secure)') : chalk.yellow('(setting up)');
                 console.log(chalk.white(`   - ${group.name}`), status);
-                console.log(chalk.gray(`     Membros: ${members}`));
+                console.log(chalk.gray(`     Members: ${group.members.join(', ')}`));
             });
         }
-        
-        console.log(chalk.blue(`Total: ${data.count} grupos`));
+
+        console.log(chalk.blue(`Total: ${data.count} group(s)`));
         this.client.setPrompt();
     }
 
     /**
-     * Sai do chat atual (ou grupo)
+     * Leaves the current chat (or group: this triggers a re-key)
      */
     leaveChat() {
         if (!this.client.currentChat) {
-            console.log(chalk.yellow('⚠️  Você não está em nenhum chat'));
+            console.log(chalk.yellow('⚠️  You are not in a chat'));
             this.client.setPrompt();
             return;
         }
 
-        // Se estiver em um grupo, sair do grupo (isso recria o secret share)
         if (this.client.currentChat.type === 'group') {
             const groupName = this.client.currentChat.target;
-            console.log(chalk.yellow(`👋 Saindo do grupo "${groupName}"...`));
+            console.log(chalk.yellow(`👋 Leaving group "${groupName}"...`));
             this.client.wsClient.leaveGroup(groupName);
-            this.client.currentChat = null;
         } else {
-            // Chat privado
-            console.log(chalk.yellow('👋 Saindo do chat...'));
+            console.log(chalk.yellow('👋 Leaving chat...'));
             this.client.wsClient.leaveChat();
-            this.client.currentChat = null;
         }
+        this.client.currentChat = null;
     }
 
     /**
-     * Mostra status da conexão
+     * Shows connection status
      */
     showStatus() {
         const status = this.client.wsClient.getStatus();
-        
-        console.log(chalk.blue('Status da Conexão:'));
-        console.log(chalk.white(`   - Servidor: ${this.client.serverUrl}`), status.isConnected ? chalk.green('✅') : chalk.red('❌'));
-        console.log(chalk.white(`   - Usuário: ${status.username}`));
-        console.log(chalk.white(`   - Chaves ECDH: ${status.hasPublicKey ? '✅' : '❌'}`));
-        console.log(chalk.white(`   - Chaves compartilhadas: ${status.sharedKeysCount}`));
-        
-        if (this.client.currentChat) {
-            if (this.client.currentChat.type === 'private') {
-                console.log(chalk.white(`   - Chat ativo: ${this.client.currentChat.target} (1:1)`));
-            } else {
-                console.log(chalk.white(`   - Chat ativo: ${this.client.currentChat.target} (grupo)`));
-            }
-        } else {
-            console.log(chalk.white('   - Chat ativo: Nenhum'));
-        }
-        
-        console.log(chalk.white(`   - Modo debug: ${this.client.debugMode ? 'Ativado' : 'Desativado'}`));
+        const chat = this.client.currentChat;
+
+        console.log(chalk.blue('Connection status:'));
+        console.log(chalk.white(`   - Server: ${this.client.serverUrl}`), status.isConnected ? chalk.green('✅') : chalk.red('❌'));
+        console.log(chalk.white(`   - User: ${status.username}`));
+        console.log(chalk.white(`   - ECDH keys: ${status.hasPublicKey ? '✅' : '❌'}`));
+        console.log(chalk.white(`   - Session keys: ${status.sharedKeysCount}`));
+        console.log(chalk.white(`   - Active chat: ${chat ? `${chat.target} (${chat.type === 'private' ? '1:1' : 'group'})` : 'none'}`));
+        console.log(chalk.white(`   - Debug mode: ${this.client.debugMode ? 'on' : 'off'}`));
         this.client.setPrompt();
     }
 
     /**
-     * Mostra informações das chaves (incluindo chave privada)
+     * Shows every key (including private ones, for study purposes)
      */
     showKeys() {
         const keyInfo = this.client.wsClient.getKeyInfo();
-        
+
         if (keyInfo.error) {
             console.log(chalk.red(`❌ ${keyInfo.error}`));
             this.client.setPrompt();
             return;
         }
 
-        console.log(chalk.blue('🔑 Informações das Chaves:\n'));
-        
-        // ==================== PILAR: INTEGRIDADE ====================
+        console.log(chalk.blue('🔑 Key information:\n'));
+
+        // ==================== PILLAR: INTEGRITY ====================
         console.log(chalk.magenta('┌─────────────────────────────────────────────────────────────┐'));
-        console.log(chalk.magenta('│              🛡️  PILAR: INTEGRIDADE                         │'));
-        console.log(chalk.magenta('│         (Identidade Persistente - Ed25519)                  │'));
+        console.log(chalk.magenta('│              🛡️  PILLAR: INTEGRITY                          │'));
+        console.log(chalk.magenta('│         (Persistent identity - Ed25519)                     │'));
         console.log(chalk.magenta('└─────────────────────────────────────────────────────────────┘\n'));
 
         try {
             const ed25519KeypairFile = getKeypairFile(this.client.username);
-            
+
             if (fs.existsSync(ed25519KeypairFile)) {
                 const ed25519Data = JSON.parse(fs.readFileSync(ed25519KeypairFile, 'utf8'));
-                
-                // Validar dados
-                if (!ed25519Data || !ed25519Data.publicKey || !ed25519Data.privateKey) {
-                    throw new Error('Arquivo Ed25519 está corrompido ou incompleto');
-                }
-                
-                // Calcular fingerprint
-                const publicKeyBuffer = Buffer.from(ed25519Data.publicKey, 'hex');
-                const fingerprint = crypto.createHash('sha256').update(publicKeyBuffer).digest('hex');
 
-                console.log(chalk.cyan('ED25519 - Identidade de Longo Prazo:'));
-                console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
-                console.log(chalk.gray(`📄 Arquivo: ${path.relative(process.cwd(), ed25519KeypairFile)}\n`));
-                
-                console.log(chalk.red('🔴 Chave Privada (NUNCA compartilhar):'));
+                if (!ed25519Data || !ed25519Data.publicKey || !ed25519Data.privateKey) {
+                    throw new Error('Ed25519 file is corrupted or incomplete');
+                }
+
+                const fingerprint = crypto.createHash('sha256')
+                    .update(Buffer.from(ed25519Data.publicKey, 'hex'))
+                    .digest('hex');
+
+                console.log(chalk.cyan('ED25519 - Long-term identity:'));
+                console.log(chalk.gray(LINE));
+                console.log(chalk.gray(`📄 File: ${path.relative(process.cwd(), ed25519KeypairFile)}\n`));
+
+                console.log(chalk.red('🔴 Private key (NEVER share):'));
                 console.log(chalk.gray(`   ${ed25519Data.privateKey.substring(0, 64)}...`));
                 console.log(chalk.gray(`   (${ed25519Data.privateKey.length} chars / ${ed25519Data.privateKey.length / 2} bytes)`));
-                console.log(chalk.gray(`   Usada para: Assinar chaves ECDH efêmeras\n`));
-                
-                console.log(chalk.green('🔵 Chave Pública (Compartilhada livremente):'));
+                console.log(chalk.gray('   Used to: sign ephemeral ECDH keys\n'));
+
+                console.log(chalk.green('🔵 Public key (shared freely):'));
                 console.log(chalk.gray(`   ${ed25519Data.publicKey.substring(0, 64)}...`));
                 console.log(chalk.gray(`   (${ed25519Data.publicKey.length} chars / ${ed25519Data.publicKey.length / 2} bytes)`));
-                console.log(chalk.gray(`   Usada para: Outros verificarem minhas assinaturas\n`));
-                
-                console.log(chalk.yellow('🔍 Fingerprint (Identidade única):'));
-                console.log(chalk.white(`   ${fingerprint}`));
-                console.log(chalk.gray(`   (SHA-256 da chave pública)`));
-                console.log(chalk.gray(`   Usado para: TOFU - Detectar mudanças de identidade\n`));
+                console.log(chalk.gray('   Used by: others, to verify my signatures\n'));
 
-                // TOFU Store - Identidades conhecidas
-                console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
-                console.log(chalk.cyan('TOFU - Identidades Conhecidas (Trust On First Use):'));
-                console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
+                console.log(chalk.yellow('🔍 Fingerprint (unique identity):'));
+                console.log(chalk.white(`   ${fingerprint}`));
+                console.log(chalk.gray('   (SHA-256 of the public key)'));
+                console.log(chalk.gray('   Used for: TOFU - detecting identity changes\n'));
+
+                // TOFU store - known identities
                 const tofuFile = getTofuStore(this.client.username);
-                console.log(chalk.gray(`📄 Arquivo: ${path.relative(process.cwd(), tofuFile)}\n`));
+                console.log(chalk.gray(LINE));
+                console.log(chalk.cyan('TOFU - Known identities (Trust On First Use):'));
+                console.log(chalk.gray(LINE));
+                console.log(chalk.gray(`📄 File: ${path.relative(process.cwd(), tofuFile)}\n`));
 
                 if (fs.existsSync(tofuFile)) {
                     const pinnedKeys = JSON.parse(fs.readFileSync(tofuFile, 'utf8'));
-                    const peerCount = Object.keys(pinnedKeys).length;
-                    
-                    if (peerCount > 0) {
-                        console.log(chalk.white(`Total de identidades armazenadas: ${peerCount}\n`));
-                        
-                        Object.entries(pinnedKeys).forEach(([peerName, data]) => {
-                            // Validar dados antes de processar
+                    const peers = Object.entries(pinnedKeys);
+
+                    if (peers.length > 0) {
+                        console.log(chalk.white(`Stored identities: ${peers.length}\n`));
+
+                        peers.forEach(([peerName, data]) => {
                             if (!data || !data.ed25519PubHex) {
-                                console.log(chalk.red(`❌ Dados inválidos para ${peerName}\n`));
+                                console.log(chalk.red(`❌ Invalid data for ${peerName}\n`));
                                 return;
                             }
-                            
-                            const peerPubKey = data.ed25519PubHex;
-                            const storedFingerprint = data.fingerprint;
-                            const pinnedDate = new Date(data.firstSeen).toLocaleString('pt-BR');
-                            
+
                             console.log(chalk.white(`👤 ${peerName}:`));
-                            console.log(chalk.gray(`   Chave Pública: ${peerPubKey.substring(0, 40)}...`));
-                            console.log(chalk.yellow(`   Fingerprint: ${storedFingerprint}`));
-                            console.log(chalk.gray(`   Primeira vez em: ${pinnedDate}`));
-                            console.log(chalk.green(`   Status: ✓ Identidade conhecida e confiável\n`));
+                            console.log(chalk.gray(`   Public key: ${data.ed25519PubHex.substring(0, 40)}...`));
+                            console.log(chalk.yellow(`   Fingerprint: ${data.fingerprint}`));
+                            console.log(chalk.gray(`   First seen: ${new Date(data.firstSeen).toLocaleString()}`));
+                            console.log(chalk.green('   Status: ✓ known, trusted identity\n'));
                         });
                     } else {
-                        console.log(chalk.gray('Nenhuma identidade armazenada ainda.'));
-                        console.log(chalk.gray('(Quando você falar com alguém pela primeira vez, será armazenado aqui)\n'));
+                        console.log(chalk.gray('No identities stored yet.'));
+                        console.log(chalk.gray('(They are stored the first time you talk to someone)\n'));
                     }
                 } else {
-                    console.log(chalk.gray('Arquivo TOFU ainda não criado.'));
-                    console.log(chalk.gray('(Será criado quando você falar com alguém pela primeira vez)\n'));
+                    console.log(chalk.gray('TOFU file not created yet.'));
+                    console.log(chalk.gray('(It is created the first time you talk to someone)\n'));
                 }
 
             } else {
-                console.log(chalk.yellow('❌ Arquivo Ed25519 não encontrado.'));
-                console.log(chalk.gray('(Será criado ao conectar ao servidor)\n'));
+                console.log(chalk.yellow('❌ Ed25519 file not found.'));
+                console.log(chalk.gray('(It is created when you connect)\n'));
             }
 
         } catch (error) {
-            console.log(chalk.red('❌ Erro ao carregar informações Ed25519:'), error.message);
+            console.log(chalk.red('❌ Error loading Ed25519 information:'), error.message);
             console.log('');
         }
 
-        // ==================== PILAR: CONFIDENCIALIDADE ====================
+        // ==================== PILLAR: CONFIDENTIALITY ====================
         console.log(chalk.magenta('┌─────────────────────────────────────────────────────────────┐'));
-        console.log(chalk.magenta('│           🔐 PILAR: CONFIDENCIALIDADE                       │'));
-        console.log(chalk.magenta('│           (Chaves de Sessão Efêmeras)                       │'));
+        console.log(chalk.magenta('│           🔐 PILLAR: CONFIDENTIALITY                        │'));
+        console.log(chalk.magenta('│           (Ephemeral session keys)                          │'));
         console.log(chalk.magenta('└─────────────────────────────────────────────────────────────┘\n'));
 
-        console.log(chalk.cyan('ECDH - Chave de Sessão Efêmera:'));
-        console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
-        console.log(chalk.yellow('⚠️  Chave gerada a CADA CONEXÃO (descartada ao desconectar)\n'));
+        console.log(chalk.cyan('ECDH - Ephemeral key:'));
+        console.log(chalk.gray(LINE));
+        console.log(chalk.yellow('⚠️  Generated on EVERY CONNECTION (discarded on disconnect)\n'));
 
         if (keyInfo.hasPrivateKey) {
-            console.log(chalk.red('🔴 Chave Privada ECDH (In-Memory / RAM):'));
+            console.log(chalk.red('🔴 ECDH private key (in memory only):'));
             console.log(chalk.gray(`   ${keyInfo.privateKeyHex}`));
             console.log(chalk.gray(`   (${keyInfo.privateKeyHex.length / 2} bytes)`));
-            console.log(chalk.gray(`   Curva: secp256k1`));
-            console.log(chalk.gray(`   Usada para: Computar shared secret via ECDH\n`));
+            console.log(chalk.gray(`   Curve: ${keyInfo.curve}`));
+            console.log(chalk.gray('   Used to: compute the ECDH shared secret\n'));
         }
 
         if (keyInfo.hasPublicKey) {
-            console.log(chalk.green('🔵 Chave Pública ECDH (Enviada para outros):'));
+            console.log(chalk.green('🔵 ECDH public key (sent to others):'));
             console.log(chalk.gray(`   ${keyInfo.publicKeyHex}`));
             console.log(chalk.gray(`   (${keyInfo.publicKeyHex.length / 2} bytes)`));
-            console.log(chalk.gray(`   Curva: secp256k1`));
-            console.log(chalk.gray(`   Usada para: Outros computarem shared secret com você\n`));
+            console.log(chalk.gray(`   Curve: ${keyInfo.curve}`));
+            console.log(chalk.gray('   Used by: others, to compute the shared secret with you\n'));
         }
 
-        if (!keyInfo.hasPrivateKey && !keyInfo.hasPublicKey) {
-            console.log(chalk.yellow('❌ Chaves ECDH não geradas ainda (não conectado)\n'));
-        }
-
-        console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
-        console.log(chalk.cyan('Chaves Compartilhadas Derivadas (HKDF):'));
-        console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
-        console.log(chalk.yellow('⚠️  Armazenadas em RAM (perdidas ao desconectar)'));
-        console.log(chalk.yellow('⚠️  Derivadas via HKDF a partir do shared secret ECDH\n'));
+        console.log(chalk.gray(LINE));
+        console.log(chalk.cyan('Derived session keys (HKDF):'));
+        console.log(chalk.gray(LINE));
+        console.log(chalk.yellow('⚠️  Kept in memory (lost on disconnect)'));
+        console.log(chalk.yellow('⚠️  Derived via HKDF from the ECDH shared secret\n'));
 
         if (keyInfo.sharedKeysCount > 0) {
-            console.log(chalk.white(`Total: ${keyInfo.sharedKeysCount} chave(s) ativa(s)\n`));
-            
+            console.log(chalk.white(`Total: ${keyInfo.sharedKeysCount} active key(s)\n`));
+
             this.client.wsClient.sharedKeys.forEach((key, peer) => {
-                const isGroup = peer.includes(':');
-                if (isGroup) {
+                if (peer.includes(':')) {
                     const [groupName, peerName] = peer.split(':');
-                    console.log(chalk.white(`👥 Grupo "${groupName}" com ${peerName}:`));
+                    console.log(chalk.white(`👥 Group "${groupName}" with ${peerName}:`));
                 } else {
-                    console.log(chalk.white(`👤 Chat 1:1 com ${peer}:`));
+                    console.log(chalk.white(`👤 1:1 chat with ${peer}:`));
                 }
                 console.log(chalk.gray(`   encKey (AES-128-GCM): ${key.toString('hex')}`));
                 console.log(chalk.gray(`   (${key.length} bytes / ${key.length * 8} bits)`));
-                console.log(chalk.gray(`   Derivada via: HKDF-SHA256(ECDH_shared_secret)\n`));
+                console.log(chalk.gray('   Derived via: HKDF-SHA256(ECDH shared secret)\n'));
             });
         } else {
-            console.log(chalk.gray('Nenhuma chave compartilhada estabelecida ainda.'));
-            console.log(chalk.gray('(Use /chat <usuario> para iniciar troca de chaves)\n'));
+            console.log(chalk.gray('No session keys established yet.'));
+            console.log(chalk.gray('(Use /chat <user> to start a key exchange)\n'));
         }
 
-        console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
-        console.log(chalk.cyan('Chaves de Grupo:'));
-        console.log(chalk.gray('─────────────────────────────────────────────────────────────'));
-        console.log(chalk.yellow('⚠️  Armazenadas em RAM (perdidas ao desconectar)'));
-        console.log(chalk.yellow('⚠️  Geradas pelo criador e distribuídas via envelope\n'));
+        console.log(chalk.gray(LINE));
+        console.log(chalk.cyan('Group keys:'));
+        console.log(chalk.gray(LINE));
+        console.log(chalk.yellow('⚠️  Kept in memory (lost on disconnect)'));
+        console.log(chalk.yellow('⚠️  Generated by the creator and distributed inside envelopes\n'));
 
         if (keyInfo.groupKeysCount > 0) {
-            console.log(chalk.white(`Total: ${keyInfo.groupKeysCount} grupo(s) ativo(s)\n`));
-            
+            console.log(chalk.white(`Total: ${keyInfo.groupKeysCount} active group(s)\n`));
+
             this.client.wsClient.groupKeys.forEach((key, groupName) => {
-                console.log(chalk.white(`👥 Grupo "${groupName}":`));
-                console.log(chalk.gray(`   Chave de Grupo (AES-128-GCM): ${key.toString('hex')}`));
+                console.log(chalk.white(`👥 Group "${groupName}":`));
+                console.log(chalk.gray(`   Group key (AES-128-GCM): ${key.toString('hex')}`));
                 console.log(chalk.gray(`   (${key.length} bytes / ${key.length * 8} bits)`));
-                console.log(chalk.gray(`   Tipo: Aleatória (gerada pelo criador)`));
-                console.log(chalk.gray(`   Recebida: Via envelope criptografado com chave pairwise\n`));
+                console.log(chalk.gray('   Type: random (generated by the creator)'));
+                console.log(chalk.gray('   Received: inside an envelope encrypted with a pairwise key\n'));
             });
         } else {
-            console.log(chalk.gray('Nenhuma chave de grupo estabelecida ainda.'));
-            console.log(chalk.gray('(Use /group <nome> para criar/entrar em grupo)\n'));
+            console.log(chalk.gray('No group keys yet.'));
+            console.log(chalk.gray('(Use /group <name> to create/join a group)\n'));
         }
-        
+
         this.client.setPrompt();
     }
 
     /**
-     * Toggle modo debug
+     * Toggles debug mode
      */
     toggleDebug() {
         this.client.debugMode = !this.client.debugMode;
-        console.log(chalk.blue(`Modo debug: ${this.client.debugMode ? 'Ativado' : 'Desativado'}`));
+        this.client.wsClient.debugMode = this.client.debugMode;
+        console.log(chalk.blue(`Debug mode: ${this.client.debugMode ? 'on' : 'off'}`));
         this.client.setPrompt();
     }
 
     /**
-     * Simula reinstalação da aplicação (gera novo perfil)
+     * Simulates an app reinstall (deletes the local identity)
      */
     newProfile() {
-        console.log(chalk.yellow('\n⚠️  ATENÇÃO: Você está prestes a DELETAR seu perfil atual!'));
-        console.log(chalk.yellow('   Isso vai remover:'));
-        console.log(chalk.gray('   • Sua identidade Ed25519 (chave de longo prazo)'));
-        console.log(chalk.gray('   • Todas as identidades TOFU armazenadas'));
-        console.log(chalk.gray('   • Todas as conexões ativas'));
+        console.log(chalk.yellow('\n⚠️  WARNING: you are about to DELETE your current profile!'));
+        console.log(chalk.yellow('   This removes:'));
+        console.log(chalk.gray('   • Your Ed25519 identity (long-term key)'));
+        console.log(chalk.gray('   • Every stored TOFU identity'));
+        console.log(chalk.gray('   • Every active session key'));
         console.log('');
-        console.log(chalk.red('   Esta ação é IRREVERSÍVEL!'));
-        console.log(chalk.yellow('\n   Isso simula você desinstalar e reinstalar a aplicação.'));
-        console.log(chalk.yellow('   Outros usuários receberão alerta TOFU ao falar com você.\n'));
-        
-        // Arquivos a deletar
+        console.log(chalk.red('   This cannot be undone!'));
+        console.log(chalk.yellow('\n   It simulates uninstalling and reinstalling the app.'));
+        console.log(chalk.yellow('   Other users will get a TOFU alert when talking to you.\n'));
+
         const ed25519File = getKeypairFile(this.client.username);
         const tofuFile = getTofuStore(this.client.username);
-        
-        let deleted = [];
-        
-        // Deletar Ed25519
+        const deleted = [];
+
         if (fs.existsSync(ed25519File)) {
             fs.unlinkSync(ed25519File);
-            deleted.push('✓ Identidade Ed25519 deletada');
+            deleted.push('✓ Ed25519 identity deleted');
         }
-        
-        // Deletar TOFU store
+
         if (fs.existsSync(tofuFile)) {
             fs.unlinkSync(tofuFile);
-            deleted.push('✓ Registro TOFU deletado');
+            deleted.push('✓ TOFU store deleted');
         }
-        
-        // Limpar estado de sessão
+
         this.client.wsClient.clearSession();
-        deleted.push('✓ Sessão atual limpa');
-        
-        console.log(chalk.green('\n🔄 Perfil resetado:'));
+        deleted.push('✓ Current session cleared');
+
+        console.log(chalk.green('\n🔄 Profile reset:'));
         deleted.forEach(msg => console.log(chalk.green(`   ${msg}`)));
-        
-        console.log(chalk.yellow('\n⚠️  Você precisa RECONECTAR para gerar novo perfil:'));
-        console.log(chalk.cyan('   1. Use /quit para desconectar'));
-        console.log(chalk.cyan('   2. Em um novo terminal, execute:'));
+
+        console.log(chalk.yellow('\n⚠️  You need to RECONNECT to generate a new profile:'));
+        console.log(chalk.cyan('   1. Use /quit to disconnect'));
+        console.log(chalk.cyan('   2. Run again:'));
         console.log(chalk.white(`      node client/cli/main.js --username ${this.client.username}`));
-        console.log(chalk.cyan('   3. Novo par Ed25519 será gerado automaticamente\n'));
-        
+        console.log(chalk.cyan('   3. A new Ed25519 key pair will be generated automatically\n'));
+
         this.client.setPrompt();
     }
 
     /**
-     * Deleta registro TOFU de um usuário específico
+     * Deletes the TOFU pin of a specific user
      */
     deleteTofuPin(args) {
         if (args.length === 0) {
-            console.log(chalk.red('❌ Use: /delete @usuario'));
-            console.log(chalk.gray('   Exemplo: /delete @Alice'));
+            console.log(chalk.red('❌ Usage: /delete @user'));
+            console.log(chalk.gray('   Example: /delete @Alice'));
             this.client.setPrompt();
             return;
         }
-        
-        // Remover @ se presente
-        let targetUser = args[0];
-        if (targetUser.startsWith('@')) {
-            targetUser = targetUser.substring(1);
-        }
-        
+
+        const targetUser = args[0].replace(/^@/, '');
+
         if (targetUser === this.client.username) {
-            console.log(chalk.red('❌ Não é possível deletar seu próprio perfil'));
-            console.log(chalk.yellow('   Use /newprofile para resetar seu perfil'));
+            console.log(chalk.red('❌ You cannot delete your own profile this way'));
+            console.log(chalk.yellow('   Use /newprofile to reset your profile'));
             this.client.setPrompt();
             return;
         }
-        
+
         const tofuFile = getTofuStore(this.client.username);
-        
+
         if (!fs.existsSync(tofuFile)) {
-            console.log(chalk.yellow(`⚠️  Você não tem nenhum registro TOFU ainda`));
+            console.log(chalk.yellow('⚠️  You have no TOFU records yet'));
             this.client.setPrompt();
             return;
         }
-        
+
         try {
             const pins = JSON.parse(fs.readFileSync(tofuFile, 'utf8'));
-            
+
             if (!pins[targetUser]) {
-                console.log(chalk.yellow(`⚠️  Você não tem registro TOFU de ${targetUser}`));
-                console.log(chalk.gray(`   Usuários registrados: ${Object.keys(pins).join(', ') || 'nenhum'}`));
+                console.log(chalk.yellow(`⚠️  You have no TOFU record for ${targetUser}`));
+                console.log(chalk.gray(`   Recorded users: ${Object.keys(pins).join(', ') || 'none'}`));
                 this.client.setPrompt();
                 return;
             }
-            
+
             const oldFingerprint = pins[targetUser].fingerprint;
             delete pins[targetUser];
-            
             fs.writeFileSync(tofuFile, JSON.stringify(pins, null, 2));
-            
-            console.log(chalk.green(`\n✅ Registro TOFU de ${targetUser} deletado com sucesso!`));
-            console.log(chalk.gray(`   Fingerprint removido: ${oldFingerprint.substring(0, 16)}...`));
-            console.log(chalk.yellow(`\n⚠️  Próxima vez que falar com ${targetUser}:`));
-            console.log(chalk.cyan(`   • Será tratado como PRIMEIRA CONEXÃO`));
-            console.log(chalk.cyan(`   • Novo fingerprint será armazenado`));
-            console.log(chalk.cyan(`   • Ideal se ${targetUser} usou /newprofile\n`));
-            
+
+            console.log(chalk.green(`\n✅ TOFU record for ${targetUser} deleted!`));
+            console.log(chalk.gray(`   Removed fingerprint: ${oldFingerprint.substring(0, 16)}...`));
+            console.log(chalk.yellow(`\n⚠️  Next time you talk to ${targetUser}:`));
+            console.log(chalk.cyan('   • It will be treated as a FIRST CONNECTION'));
+            console.log(chalk.cyan('   • The new fingerprint will be stored'));
+            console.log(chalk.cyan(`   • Use this only if you know ${targetUser} really reset their profile\n`));
+
         } catch (err) {
-            console.log(chalk.red(`❌ Erro ao deletar registro TOFU: ${err.message}`));
+            console.log(chalk.red(`❌ Error deleting TOFU record: ${err.message}`));
         }
-        
+
         this.client.setPrompt();
     }
 
     /**
-     * Sai do sistema
+     * Exits
      */
     quit() {
-        console.log(chalk.yellow('👋 Saindo do sistema...'));
+        console.log(chalk.yellow('👋 Exiting...'));
         this.client.disconnect();
     }
 }
 
 module.exports = CommandHandler;
-
