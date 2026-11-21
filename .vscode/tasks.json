@@ -1,0 +1,14 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run IDEA quick e2e",
+			"type": "shell",
+			"command": "python3 - << 'PY'\nfrom idea_core import encrypt_idea, decrypt_idea\nFIXED_KEY = b\"\\x13\\x57\\x9B\\xDF\\x02\\x46\\x8A\\xCE\\x11\\x22\\x33\\x44\\x55\\x66\\x77\\x88\"\nmsg = \"Teste end-to-end com IDEA\"\nct = encrypt_idea(msg, FIXED_KEY)\npt = decrypt_idea(ct, FIXED_KEY)\nprint('CT hex:', ct.hex())\nprint('PT:', pt)\nPY",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		}
+	]
+}
