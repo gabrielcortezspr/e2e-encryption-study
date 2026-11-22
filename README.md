@@ -1,5 +1,10 @@
 # E2E Encryption Study
 
+![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs&logoColor=white)
+![Socket.IO](https://img.shields.io/badge/Socket.IO-relay-010101?logo=socketdotio&logoColor=white)
+[![tests](https://github.com/gabrielcortezspr/e2e-encryption-study/actions/workflows/tests.yml/badge.svg)](https://github.com/gabrielcortezspr/e2e-encryption-study/actions/workflows/tests.yml)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 A study project: an **end-to-end encrypted terminal chat** written in Node.js,
 built to learn applied cryptography by implementing the pieces of a secure
 messaging protocol one by one. The server is only a **relay**: it never sees
@@ -69,6 +74,8 @@ Any text that does not start with `/` is sent to the current chat.
 ```bash
 npm test
 ```
+
+The suite runs on every push through GitHub Actions.
 
 - [`tests/test-integrity.js`](tests/test-integrity.js): Ed25519, TOFU
   (including the changed-identity alert), ECDH, HKDF (with RFC 5869 test
